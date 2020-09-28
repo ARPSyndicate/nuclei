@@ -64,10 +64,8 @@ func (e *DNSExecuter) writeOutputDNS(domain string, req, resp *dns.Msg, matcher 
 		builder.WriteString(colorizer.Colorizer.BrightGreen(matcher.Name).Bold().String())
 	}
 
-	builder.WriteString("] [")
-	builder.WriteString(colorizer.Colorizer.BrightBlue("dns").String())
 	builder.WriteString("] ")
-
+	
 	if e.template.Info.Severity != "" {
 		builder.WriteString("[")
 		builder.WriteString(colorizer.GetColorizedSeverity(e.template.Info.Severity))
