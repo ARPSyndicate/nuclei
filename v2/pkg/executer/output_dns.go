@@ -66,11 +66,6 @@ func (e *DNSExecuter) writeOutputDNS(domain string, req, resp *dns.Msg, matcher 
 
 	builder.WriteString("] ")
 	
-	if e.template.Info.Severity != "" {
-		builder.WriteString("[")
-		builder.WriteString(colorizer.GetColorizedSeverity(e.template.Info.Severity))
-		builder.WriteString("] ")
-	}
 
 	builder.WriteString(domain)
 

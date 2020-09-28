@@ -82,12 +82,6 @@ func (e *HTTPExecuter) writeOutputHTTP(req *requests.HTTPRequest, resp *http.Res
 
 	builder.WriteString("] ")
 
-	if e.template.Info.Severity != "" {
-		builder.WriteString("[")
-		builder.WriteString(colorizer.GetColorizedSeverity(e.template.Info.Severity))
-		builder.WriteString("] ")
-	}
-
 	// Escape the URL by replacing all % with %%
 	escapedURL := strings.ReplaceAll(URL, "%", "%%")
 	builder.WriteString(escapedURL)
