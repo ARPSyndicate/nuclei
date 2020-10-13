@@ -92,11 +92,11 @@ func (e *HTTPExecuter) writeOutputHTTP(req *requests.HTTPRequest, resp *http.Res
 
 	builder.WriteString("] ")
 
-	if e.template.Info.Severity != "" {
-		builder.WriteString("[")
-		builder.WriteString(colorizer.GetColorizedSeverity(e.template.Info.Severity))
-		builder.WriteString("] ")
-	}
+	//if e.template.Info.Severity != "" {
+	//	builder.WriteString("[")
+	//	builder.WriteString(colorizer.GetColorizedSeverity(e.template.Info.Severity))
+	//	builder.WriteString("] ")
+	//}
 
 	builder.WriteString(URL)
 
