@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -22,9 +23,12 @@ import (
 	"github.com/projectdiscovery/httpx/common/cache"
 	"github.com/projectdiscovery/nuclei/v2/internal/bufwriter"
 	"github.com/projectdiscovery/nuclei/v2/internal/progress"
+	"github.com/projectdiscovery/nuclei/v2/internal/tracelog"
 	"github.com/projectdiscovery/nuclei/v2/pkg/colorizer"
+	"github.com/projectdiscovery/nuclei/v2/pkg/generators"
 	"github.com/projectdiscovery/nuclei/v2/pkg/globalratelimiter"
 	"github.com/projectdiscovery/nuclei/v2/pkg/matchers"
+	projetctfile "github.com/projectdiscovery/nuclei/v2/pkg/projectfile"
 	"github.com/projectdiscovery/nuclei/v2/pkg/requests"
 	"github.com/projectdiscovery/nuclei/v2/pkg/templates"
 	"github.com/projectdiscovery/rawhttp"
@@ -34,13 +38,16 @@ import (
 )
 
 const (
-	two = 2
-	ten = 10
+	two                   = 2
+	ten                   = 10
+	defaultMaxWorkers     = 150
+	defaultMaxHistorydata = 150
 )
 
 // HTTPExecuter is client for performing HTTP requests
 // for a template.
 type HTTPExecuter struct {
+	pf               *projetctfile.ProjectFile
 	customHeaders    requests.CustomHeaders
 	colorizer        colorizer.NucleiColorizer
 	httpClient       *retryablehttp.Client
@@ -49,6 +56,7 @@ type HTTPExecuter struct {
 	bulkHTTPRequest  *requests.BulkHTTPRequest
 	writer           *bufwriter.Writer
 	CookieJar        *cookiejar.Jar
+	traceLog         tracelog.Log
 	decolorizer      *regexp.Regexp
 	coloredOutput    bool
 	debug            bool
@@ -72,6 +80,7 @@ type HTTPOptions struct {
 	CookieJar        *cookiejar.Jar
 	Colorizer        *colorizer.NucleiColorizer
 	Decolorizer      *regexp.Regexp
+	TraceLog         tracelog.Log
 	Debug            bool
 	JSON             bool
 	JSONRequests     bool
@@ -79,14 +88,17 @@ type HTTPOptions struct {
 	CookieReuse      bool
 	ColoredOutput    bool
 	StopAtFirstMatch bool
+	PF               *projetctfile.ProjectFile
+	Dialer           *cache.DialerFunc
 }
 
 // NewHTTPExecuter creates a new HTTP executer from a template
 // and a HTTP request query.
 func NewHTTPExecuter(options *HTTPOptions) (*HTTPExecuter, error) {
-	var proxyURL *url.URL
-
-	var err error
+	var (
+		proxyURL *url.URL
+		err      error
+	)
 
 	if options.ProxyURL != "" {
 		proxyURL, err = url.Parse(options.ProxyURL)
@@ -124,6 +136,7 @@ func NewHTTPExecuter(options *HTTPOptions) (*HTTPExecuter, error) {
 		noMeta:           options.NoMeta,
 		httpClient:       client,
 		rawHTTPClient:    rawClient,
+		traceLog:         options.TraceLog,
 		template:         options.Template,
 		bulkHTTPRequest:  options.BulkHTTPRequest,
 		writer:           options.Writer,
@@ -133,9 +146,52 @@ func NewHTTPExecuter(options *HTTPOptions) (*HTTPExecuter, error) {
 		colorizer:        *options.Colorizer,
 		decolorizer:      options.Decolorizer,
 		stopAtFirstMatch: options.StopAtFirstMatch,
+		pf:               options.PF,
 	}
 
 	return executer, nil
+}
+
+func (e *HTTPExecuter) ExecuteRaceRequest(reqURL string) *Result {
+	result := &Result{
+		Matches:     make(map[string]interface{}),
+		Extractions: make(map[string]interface{}),
+	}
+
+	dynamicvalues := make(map[string]interface{})
+
+	// verify if the URL is already being processed
+	if e.bulkHTTPRequest.HasGenerator(reqURL) {
+		return result
+	}
+
+	e.bulkHTTPRequest.CreateGenerator(reqURL)
+
+	// Workers that keeps enqueuing new requests
+	maxWorkers := e.bulkHTTPRequest.RaceNumberRequests
+	swg := sizedwaitgroup.New(maxWorkers)
+	for i := 0; i < e.bulkHTTPRequest.RaceNumberRequests; i++ {
+		swg.Add()
+		// base request
+		request, err := e.bulkHTTPRequest.MakeHTTPRequest(reqURL, dynamicvalues, e.bulkHTTPRequest.Current(reqURL))
+		if err != nil {
+			result.Error = err
+			return result
+		}
+		go func(httpRequest *requests.HTTPRequest) {
+			defer swg.Done()
+
+			// If the request was built correctly then execute it
+			err = e.handleHTTP(reqURL, httpRequest, dynamicvalues, result, "")
+			if err != nil {
+				result.Error = errors.Wrap(err, "could not handle http request")
+			}
+		}(request)
+	}
+
+	swg.Wait()
+
+	return result
 }
 
 func (e *HTTPExecuter) ExecuteParallelHTTP(p progress.IProgress, reqURL string) *Result {
@@ -170,10 +226,13 @@ func (e *HTTPExecuter) ExecuteParallelHTTP(p progress.IProgress, reqURL string) 
 				globalratelimiter.Take(reqURL)
 
 				// If the request was built correctly then execute it
-				err = e.handleHTTP(reqURL, httpRequest, dynamicvalues, result)
+				err = e.handleHTTP(reqURL, httpRequest, dynamicvalues, result, "")
 				if err != nil {
+					e.traceLog.Request(e.template.ID, reqURL, "http", err)
 					result.Error = errors.Wrap(err, "could not handle http request")
 					p.Drop(remaining)
+				} else {
+					e.traceLog.Request(e.template.ID, reqURL, "http", nil)
 				}
 			}(request)
 		}
@@ -185,7 +244,7 @@ func (e *HTTPExecuter) ExecuteParallelHTTP(p progress.IProgress, reqURL string) 
 	return result
 }
 
-func (e *HTTPExecuter) ExecuteTurboHTTP(p progress.IProgress, reqURL string) *Result {
+func (e *HTTPExecuter) ExecuteTurboHTTP(reqURL string) *Result {
 	result := &Result{
 		Matches:     make(map[string]interface{}),
 		Extractions: make(map[string]interface{}),
@@ -198,7 +257,6 @@ func (e *HTTPExecuter) ExecuteTurboHTTP(p progress.IProgress, reqURL string) *Re
 		return result
 	}
 
-	remaining := e.bulkHTTPRequest.GetRequestCount()
 	e.bulkHTTPRequest.CreateGenerator(reqURL)
 
 	// need to extract the target from the url
@@ -218,8 +276,8 @@ func (e *HTTPExecuter) ExecuteTurboHTTP(p progress.IProgress, reqURL string) *Re
 	}
 	pipeclient := rawhttp.NewPipelineClient(pipeOptions)
 
-	// 150 should be a sufficient value to keep queues always full
-	maxWorkers := 150
+	// defaultMaxWorkers should be a sufficient value to keep queues always full
+	maxWorkers := defaultMaxWorkers
 	// in case the queue is bigger increase the workers
 	if pipeOptions.MaxPendingRequests > maxWorkers {
 		maxWorkers = pipeOptions.MaxPendingRequests
@@ -229,7 +287,6 @@ func (e *HTTPExecuter) ExecuteTurboHTTP(p progress.IProgress, reqURL string) *Re
 		request, err := e.bulkHTTPRequest.MakeHTTPRequest(reqURL, dynamicvalues, e.bulkHTTPRequest.Current(reqURL))
 		if err != nil {
 			result.Error = err
-			p.Drop(remaining)
 		} else {
 			swg.Add()
 			go func(httpRequest *requests.HTTPRequest) {
@@ -239,10 +296,12 @@ func (e *HTTPExecuter) ExecuteTurboHTTP(p progress.IProgress, reqURL string) *Re
 				// If the request was built correctly then execute it
 				request.Pipeline = true
 				request.PipelineClient = pipeclient
-				err = e.handleHTTP(reqURL, httpRequest, dynamicvalues, result)
+				err = e.handleHTTP(reqURL, httpRequest, dynamicvalues, result, "")
 				if err != nil {
+					e.traceLog.Request(e.template.ID, reqURL, "http", err)
 					result.Error = errors.Wrap(err, "could not handle http request")
-					p.Drop(remaining)
+				} else {
+					e.traceLog.Request(e.template.ID, reqURL, "http", nil)
 				}
 				request.PipelineClient = nil
 			}(request)
@@ -260,20 +319,28 @@ func (e *HTTPExecuter) ExecuteTurboHTTP(p progress.IProgress, reqURL string) *Re
 func (e *HTTPExecuter) ExecuteHTTP(p progress.IProgress, reqURL string) *Result {
 	// verify if pipeline was requested
 	if e.bulkHTTPRequest.Pipeline {
-		return e.ExecuteTurboHTTP(p, reqURL)
+		return e.ExecuteTurboHTTP(reqURL)
 	}
 
+	// verify if a basic race condition was requested
+	if e.bulkHTTPRequest.Race && e.bulkHTTPRequest.RaceNumberRequests > 0 {
+		return e.ExecuteRaceRequest(reqURL)
+	}
+
+	// verify if parallel elaboration was requested
 	if e.bulkHTTPRequest.Threads > 0 {
 		return e.ExecuteParallelHTTP(p, reqURL)
 	}
 
+	var requestNumber int
+
 	result := &Result{
 		Matches:     make(map[string]interface{}),
 		Extractions: make(map[string]interface{}),
+		historyData: make(map[string]interface{}),
 	}
 
 	dynamicvalues := make(map[string]interface{})
-	_ = dynamicvalues
 
 	// verify if the URL is already being processed
 	if e.bulkHTTPRequest.HasGenerator(reqURL) {
@@ -284,6 +351,7 @@ func (e *HTTPExecuter) ExecuteHTTP(p progress.IProgress, reqURL string) *Result 
 	e.bulkHTTPRequest.CreateGenerator(reqURL)
 
 	for e.bulkHTTPRequest.Next(reqURL) && !result.Done {
+		requestNumber++
 		httpRequest, err := e.bulkHTTPRequest.MakeHTTPRequest(reqURL, dynamicvalues, e.bulkHTTPRequest.Current(reqURL))
 		if err != nil {
 			result.Error = err
@@ -291,10 +359,14 @@ func (e *HTTPExecuter) ExecuteHTTP(p progress.IProgress, reqURL string) *Result 
 		} else {
 			globalratelimiter.Take(reqURL)
 			// If the request was built correctly then execute it
-			err = e.handleHTTP(reqURL, httpRequest, dynamicvalues, result)
+			format := "%s_" + strconv.Itoa(requestNumber)
+			err = e.handleHTTP(reqURL, httpRequest, dynamicvalues, result, format)
 			if err != nil {
 				result.Error = errors.Wrap(err, "could not handle http request")
 				p.Drop(remaining)
+				e.traceLog.Request(e.template.ID, reqURL, "http", err)
+			} else {
+				e.traceLog.Request(e.template.ID, reqURL, "http", nil)
 			}
 		}
 
@@ -315,33 +387,40 @@ func (e *HTTPExecuter) ExecuteHTTP(p progress.IProgress, reqURL string) *Result 
 	return result
 }
 
-func (e *HTTPExecuter) handleHTTP(reqURL string, request *requests.HTTPRequest, dynamicvalues map[string]interface{}, result *Result) error {
+func (e *HTTPExecuter) handleHTTP(reqURL string, request *requests.HTTPRequest, dynamicvalues map[string]interface{}, result *Result, format string) error {
 	e.setCustomHeaders(request)
 
 	var (
-		resp *http.Response
-		err  error
+		resp          *http.Response
+		err           error
+		dumpedRequest []byte
+		fromcache     bool
 	)
 
-	if e.debug {
-		dumpedRequest, dumpErr := requests.Dump(request, reqURL)
-		if dumpErr != nil {
-			return dumpErr
+	if e.debug || e.pf != nil {
+		dumpedRequest, err = requests.Dump(request, reqURL)
+		if err != nil {
+			return err
 		}
+	}
 
+	if e.debug {
 		gologger.Infof("Dumped HTTP request for %s (%s)\n\n", reqURL, e.template.ID)
 		fmt.Fprintf(os.Stderr, "%s", string(dumpedRequest))
 	}
 
 	timeStart := time.Now()
+
 	if request.Pipeline {
 		resp, err = request.PipelineClient.DoRaw(request.RawRequest.Method, reqURL, request.RawRequest.Path, requests.ExpandMapValues(request.RawRequest.Headers), ioutil.NopCloser(strings.NewReader(request.RawRequest.Data)))
 		if err != nil {
 			if resp != nil {
 				resp.Body.Close()
 			}
+			e.traceLog.Request(e.template.ID, reqURL, "http", err)
 			return err
 		}
+		e.traceLog.Request(e.template.ID, reqURL, "http", nil)
 	} else if request.Unsafe {
 		// rawhttp
 		// burp uses "\r\n" as new line character
@@ -355,16 +434,33 @@ func (e *HTTPExecuter) handleHTTP(reqURL string, request *requests.HTTPRequest, 
 			if resp != nil {
 				resp.Body.Close()
 			}
+			e.traceLog.Request(e.template.ID, reqURL, "http", err)
 			return err
 		}
+		e.traceLog.Request(e.template.ID, reqURL, "http", nil)
 	} else {
-		// retryablehttp
-		resp, err = e.httpClient.Do(request.Request)
-		if err != nil {
-			if resp != nil {
-				resp.Body.Close()
+		// if nuclei-project is available check if the request was already sent previously
+		if e.pf != nil {
+			// if unavailable fail silently
+			fromcache = true
+			// nolint:bodyclose // false positive the response is generated at runtime
+			resp, err = e.pf.Get(dumpedRequest)
+			if err != nil {
+				fromcache = false
 			}
-			return err
+		}
+
+		// retryablehttp
+		if resp == nil {
+			resp, err = e.httpClient.Do(request.Request)
+			if err != nil {
+				if resp != nil {
+					resp.Body.Close()
+				}
+				e.traceLog.Request(e.template.ID, reqURL, "http", err)
+				return err
+			}
+			e.traceLog.Request(e.template.ID, reqURL, "http", nil)
 		}
 	}
 
@@ -402,15 +498,31 @@ func (e *HTTPExecuter) handleHTTP(reqURL string, request *requests.HTTPRequest, 
 		return errors.Wrap(err, "could not decompress http body")
 	}
 
+	// if nuclei-project is enabled store the response if not previously done
+	if e.pf != nil && !fromcache {
+		err := e.pf.Set(dumpedRequest, resp, data)
+		if err != nil {
+			return errors.Wrap(err, "could not store in project file")
+		}
+	}
+
 	// Convert response body from []byte to string with zero copy
 	body := unsafeToString(data)
 
 	headers := headersToString(resp.Header)
-	matcherCondition := e.bulkHTTPRequest.GetMatchersCondition()
 
+	// store for internal purposes the DSL matcher data
+	// hardcode stopping storing data after defaultMaxHistorydata items
+	if len(result.historyData) < defaultMaxHistorydata {
+		result.Lock()
+		result.historyData = generators.MergeMaps(result.historyData, matchers.HTTPToMap(resp, body, headers, duration, format))
+		result.Unlock()
+	}
+
+	matcherCondition := e.bulkHTTPRequest.GetMatchersCondition()
 	for _, matcher := range e.bulkHTTPRequest.Matchers {
 		// Check if the matcher matched
-		if !matcher.Match(resp, body, headers, duration) {
+		if !matcher.Match(resp, body, headers, duration, result.historyData) {
 			// If the condition is AND we haven't matched, try next request.
 			if matcherCondition == matchers.ANDCondition {
 				return nil
@@ -490,13 +602,8 @@ func makeHTTPClient(proxyURL *url.URL, options *HTTPOptions) (*retryablehttp.Cli
 	followRedirects := options.BulkHTTPRequest.Redirects
 	maxRedirects := options.BulkHTTPRequest.MaxRedirects
 
-	dialer, err := cache.NewDialer(cache.DefaultOptions)
-	if err != nil {
-		return nil, err
-	}
-
 	transport := &http.Transport{
-		DialContext:         dialer,
+		DialContext:         *options.Dialer,
 		MaxIdleConns:        maxIdleConns,
 		MaxIdleConnsPerHost: maxIdleConnsPerHost,
 		MaxConnsPerHost:     maxConnsPerHost,
@@ -567,7 +674,7 @@ func makeCheckRedirectFunc(followRedirects bool, maxRedirects int) checkRedirect
 func (e *HTTPExecuter) setCustomHeaders(r *requests.HTTPRequest) {
 	for _, customHeader := range e.customHeaders {
 		// This should be pre-computed somewhere and done only once
-		tokens := strings.SplitN(customHeader, ":", 2)
+		tokens := strings.SplitN(customHeader, ":", two)
 		// if it's an invalid header skip it
 		if len(tokens) < two {
 			continue
@@ -593,5 +700,6 @@ type Result struct {
 	Meta        map[string]interface{}
 	Matches     map[string]interface{}
 	Extractions map[string]interface{}
+	historyData map[string]interface{}
 	Error       error
 }
