@@ -86,15 +86,15 @@ func (e *HTTPExecuter) writeOutputHTTP(req *requests.HTTPRequest, resp *http.Res
 			builder.WriteString(colorizer.Colorizer.BrightGreen(matcher.Name).Bold().String())
 		}
 
-		builder.WriteString("] [")
-		builder.WriteString(colorizer.Colorizer.BrightBlue("http").String())
+		//builder.WriteString("] [")
+		//builder.WriteString(colorizer.Colorizer.BrightBlue("http").String())
 		builder.WriteString("] ")
 
-		if e.template.Info["severity"] != "" {
-			builder.WriteString("[")
-			builder.WriteString(colorizer.GetColorizedSeverity(e.template.Info["severity"]))
-			builder.WriteString("] ")
-		}
+		//if e.template.Info["severity"] != "" {
+		//	builder.WriteString("[")
+		//	builder.WriteString(colorizer.GetColorizedSeverity(e.template.Info["severity"]))
+		//	builder.WriteString("] ")
+		//}
 	}
 	builder.WriteString(URL)
 
