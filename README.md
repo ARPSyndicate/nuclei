@@ -26,19 +26,12 @@ We have also [open-sourced a template repository](https://github.com/projectdisc
 
 -   [Features](#features)
 -   [Installation Instructions](#installation-instructions)
-    -   [From Binary](#from-binary)
-    -   [From Source](#from-source)
-    -   [From Github](#from-github)
 -   [Nuclei templates](#nuclei-templates)
 -   [Usage](#usage)
 -   [Running nuclei](#running-nuclei)
-    -   [Running with a single template.](#running-with-single-template)
-    -   [Running with multiple templates.](#running-with-multiple-templates)
-    -   [Running with subfinder](#running-with-subfinder)
-    -   [Running in Docker](#running-in-docker-container)
 -   [Rate Limits](#rate-limits)
 -   [Template exclusion](#template-exclusion)
--   [Thanks](#thanks)
+-   [Acknowledgments](#acknowledgments)
 
 
 ## Features
@@ -84,19 +77,13 @@ nuclei requires **go1.14+** to install successfully. Run the following command t
 
 ## Nuclei templates
 
-You can download or update the nuclei templates using `update-templates` flag.
+You can download and update the nuclei templates using `update-templates` flag, `update-templates` flag downloads the latest release from **nuclei-templates** [Github project](https://github.com/projectdiscovery/nuclei-templates), a community curated list of templates that are ready to use.
 
 ```sh
 ▶ nuclei -update-templates
 ```
 
-or download it from [nuclei templates](https://github.com/projectdiscovery/nuclei-templates) Github project.
-
-```sh
-▶ git clone https://github.com/projectdiscovery/nuclei-templates.git
-```
-
-**Please refer to nuclei [templating guide](https://nuclei.projectdiscovery.io/templating-guide/) to writing your own custom templates.**
+Additionally, you can write your own checks for your specific workflow and needs, please refer to **nuclei [templating guide](https://nuclei.projectdiscovery.io/templating-guide/) to write your own custom templates.**
 
 ## Usage
 
@@ -254,16 +241,18 @@ Default **nuclei-ignore** list can be accessed from [here](https://github.com/pr
 
 * * *
 
-# 📋 Notes
+### 📋 Notes
 
 - Progress bar is experimental feature, might not work in few cases. 
 - Progress bar doesn't work with workflows, numbers are not accurate due to conditional execution.
 
 
-## Thanks
-
-nuclei is made with 🖤 by the [projectdiscovery](https://projectdiscovery.io) team. Community contributions have made the project what it is. See the **[Thanks.md](https://github.com/projectdiscovery/nuclei/blob/master/THANKS.md)** file for more details.
+## Acknowledgments
 
 Do also check out these similar awesome projects that may fit in your workflow:
 
 [Burp Suite](https://portswigger.net/burp), [FFuF](https://github.com/ffuf/ffuf), [Jaeles](https://github.com/jaeles-project/jaeles), [Qsfuzz](https://github.com/ameenmaali/qsfuzz), [Inception](https://github.com/proabiral/inception), [Snallygaster](https://github.com/hannob/snallygaster), [Gofingerprint](https://github.com/Static-Flow/gofingerprint), [Sn1per](https://github.com/1N3/Sn1per/tree/master/templates), [Google tsunami](https://github.com/google/tsunami-security-scanner), [ChopChop](https://github.com/michelin/ChopChop)
+
+--------
+
+nuclei is made with 🖤 by the [projectdiscovery](https://projectdiscovery.io) team. Community contributions have made the project what it is. See the **[Thanks.md](https://github.com/projectdiscovery/nuclei/blob/master/THANKS.md)** file for more details.
