@@ -2,9 +2,11 @@ package runner
 
 import (
 	"archive/zip"
+	"bufio"
 	"bytes"
 	"context"
-	"errors"
+	"crypto/md5"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -12,11 +14,14 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/blang/semver"
 	"github.com/google/go-github/v32/github"
+	"github.com/olekukonko/tablewriter"
+	"github.com/pkg/errors"
 	"github.com/projectdiscovery/gologger"
 )
 
@@ -36,6 +41,8 @@ func (r *Runner) updateTemplates() error {
 	if err != nil {
 		return err
 	}
+	configDir := path.Join(home, "/.config", "/nuclei")
+	_ = os.MkdirAll(configDir, os.ModePerm)
 
 	templatesConfigFile := path.Join(home, nucleiConfigFilename)
 	if _, statErr := os.Stat(templatesConfigFile); !os.IsNotExist(statErr) {
@@ -46,43 +53,83 @@ func (r *Runner) updateTemplates() error {
 		r.templatesConfig = config
 	}
 
-	ctx := context.Background()
+	ignoreURL := "https://raw.githubusercontent.com/projectdiscovery/nuclei-templates/master/.nuclei-ignore"
+	if r.templatesConfig == nil {
+		currentConfig := &nucleiConfig{
+			TemplatesDirectory: path.Join(home, "nuclei-templates"),
+			IgnoreURL:          ignoreURL,
+			NucleiVersion:      Version,
+		}
+		if writeErr := r.writeConfiguration(currentConfig); writeErr != nil {
+			return errors.Wrap(writeErr, "could not write template configuration")
+		}
+		r.templatesConfig = currentConfig
+	}
+	// Check if last checked for nuclei-ignore is more than 1 hours.
+	// and if true, run the check.
+	if r.templatesConfig == nil || time.Since(r.templatesConfig.LastCheckedIgnore) > 1*time.Hour || r.options.UpdateTemplates {
+		if r.templatesConfig != nil && r.templatesConfig.IgnoreURL != "" {
+			ignoreURL = r.templatesConfig.IgnoreURL
+		}
+		gologger.Verbose().Msgf("Downloading config file from %s", ignoreURL)
 
-	if r.templatesConfig == nil || (r.options.TemplatesDirectory != "" && r.templatesConfig.TemplatesDirectory != r.options.TemplatesDirectory) {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		req, reqErr := http.NewRequestWithContext(ctx, http.MethodGet, ignoreURL, nil)
+		if reqErr == nil {
+			resp, httpGet := http.DefaultClient.Do(req)
+			if httpGet != nil {
+				if resp != nil && resp.Body != nil {
+					resp.Body.Close()
+				}
+				gologger.Warning().Msgf("Could not get ignore-file from %s: %s", ignoreURL, err)
+			} else {
+				data, _ := ioutil.ReadAll(resp.Body)
+				resp.Body.Close()
+
+				if len(data) > 0 {
+					_ = ioutil.WriteFile(path.Join(configDir, nucleiIgnoreFile), data, 0644)
+				}
+				if r.templatesConfig != nil {
+					r.templatesConfig.LastCheckedIgnore = time.Now()
+				}
+			}
+		}
+		cancel()
+	}
+
+	ctx := context.Background()
+	if r.templatesConfig.CurrentVersion == "" || (r.options.TemplatesDirectory != "" && r.templatesConfig.TemplatesDirectory != r.options.TemplatesDirectory) {
 		if !r.options.UpdateTemplates {
-			gologger.Labelf("nuclei-templates are not installed, use update-templates flag.\n")
+			gologger.Warning().Msgf("nuclei-templates are not installed (or indexed), use update-templates flag.\n")
 			return nil
 		}
 
 		// Use custom location if user has given a template directory
-		if r.options.TemplatesDirectory != "" {
-			home = r.options.TemplatesDirectory
+		r.templatesConfig = &nucleiConfig{
+			TemplatesDirectory: path.Join(home, "nuclei-templates"),
 		}
-
-		r.templatesConfig = &nucleiConfig{TemplatesDirectory: path.Join(home, "nuclei-templates")}
+		if r.options.TemplatesDirectory != "" && r.options.TemplatesDirectory != path.Join(home, "nuclei-templates") {
+			r.templatesConfig.TemplatesDirectory = r.options.TemplatesDirectory
+		}
 
 		// Download the repository and also write the revision to a HEAD file.
 		version, asset, getErr := r.getLatestReleaseFromGithub()
 		if getErr != nil {
 			return getErr
 		}
+		gologger.Verbose().Msgf("Downloading nuclei-templates (v%s) to %s\n", version.String(), r.templatesConfig.TemplatesDirectory)
 
-		gologger.Verbosef("Downloading nuclei-templates (v%s) to %s\n", "update-templates", version.String(), r.templatesConfig.TemplatesDirectory)
-
-		err = r.downloadReleaseAndUnzip(ctx, asset.GetZipballURL())
+		_, err = r.downloadReleaseAndUnzip(ctx, version.String(), asset.GetZipballURL())
 		if err != nil {
 			return err
 		}
-
 		r.templatesConfig.CurrentVersion = version.String()
 
 		err = r.writeConfiguration(r.templatesConfig)
 		if err != nil {
 			return err
 		}
-
-		gologger.Infof("Successfully downloaded nuclei-templates (v%s). Enjoy!\n", version.String())
-
+		gologger.Info().Msgf("Successfully downloaded nuclei-templates (v%s). Enjoy!\n", version.String())
 		return nil
 	}
 
@@ -95,17 +142,14 @@ func (r *Runner) updateTemplates() error {
 	// Get the configuration currently on disk.
 	verText := r.templatesConfig.CurrentVersion
 	indices := reVersion.FindStringIndex(verText)
-
 	if indices == nil {
 		return fmt.Errorf("invalid release found with tag %s", err)
 	}
-
 	if indices[0] > 0 {
 		verText = verText[indices[0]:]
 	}
 
 	oldVersion, err := semver.Make(verText)
-
 	if err != nil {
 		return err
 	}
@@ -116,38 +160,32 @@ func (r *Runner) updateTemplates() error {
 	}
 
 	if version.EQ(oldVersion) {
-		gologger.Infof("Your nuclei-templates are up to date: v%s\n", oldVersion.String())
+		gologger.Info().Msgf("Your nuclei-templates are up to date: v%s\n", oldVersion.String())
 		return r.writeConfiguration(r.templatesConfig)
 	}
 
 	if version.GT(oldVersion) {
 		if !r.options.UpdateTemplates {
-			gologger.Labelf("Your current nuclei-templates v%s are outdated. Latest is v%s\n", oldVersion, version.String())
+			gologger.Warning().Msgf("Your current nuclei-templates v%s are outdated. Latest is v%s\n", oldVersion, version.String())
 			return r.writeConfiguration(r.templatesConfig)
 		}
 
 		if r.options.TemplatesDirectory != "" {
-			home = r.options.TemplatesDirectory
-			r.templatesConfig.TemplatesDirectory = path.Join(home, "nuclei-templates")
+			r.templatesConfig.TemplatesDirectory = r.options.TemplatesDirectory
 		}
-
 		r.templatesConfig.CurrentVersion = version.String()
 
-		gologger.Verbosef("Downloading nuclei-templates (v%s) to %s\n", "update-templates", version.String(), r.templatesConfig.TemplatesDirectory)
-
-		err = r.downloadReleaseAndUnzip(ctx, asset.GetZipballURL())
+		gologger.Verbose().Msgf("Downloading nuclei-templates (v%s) to %s\n", version.String(), r.templatesConfig.TemplatesDirectory)
+		_, err = r.downloadReleaseAndUnzip(ctx, version.String(), asset.GetZipballURL())
 		if err != nil {
 			return err
 		}
-
 		err = r.writeConfiguration(r.templatesConfig)
 		if err != nil {
 			return err
 		}
-
-		gologger.Infof("Successfully updated nuclei-templates (v%s). Enjoy!\n", version.String())
+		gologger.Info().Msgf("Successfully updated nuclei-templates (v%s). Enjoy!\n", version.String())
 	}
-
 	return nil
 }
 
@@ -162,17 +200,13 @@ func (r *Runner) getLatestReleaseFromGithub() (semver.Version, *github.Repositor
 
 	// Find the most recent version based on semantic versioning.
 	var latestRelease semver.Version
-
 	var latestPublish *github.RepositoryRelease
-
 	for _, release := range rels {
 		verText := release.GetTagName()
 		indices := reVersion.FindStringIndex(verText)
-
 		if indices == nil {
 			return semver.Version{}, nil, fmt.Errorf("invalid release found with tag %s", err)
 		}
-
 		if indices[0] > 0 {
 			verText = verText[indices[0]:]
 		}
@@ -187,85 +221,242 @@ func (r *Runner) getLatestReleaseFromGithub() (semver.Version, *github.Repositor
 			latestPublish = release
 		}
 	}
-
 	if latestPublish == nil {
 		return semver.Version{}, nil, errors.New("no version found for the templates")
 	}
-
 	return latestRelease, latestPublish, nil
 }
 
 // downloadReleaseAndUnzip downloads and unzips the release in a directory
-func (r *Runner) downloadReleaseAndUnzip(ctx context.Context, downloadURL string) error {
+func (r *Runner) downloadReleaseAndUnzip(ctx context.Context, version, downloadURL string) (*templateUpdateResults, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
 	if err != nil {
-		return fmt.Errorf("failed to create HTTP request to %s: %s", downloadURL, err)
+		return nil, fmt.Errorf("failed to create HTTP request to %s: %s", downloadURL, err)
 	}
 
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("failed to download a release file from %s: %s", downloadURL, err)
+		return nil, fmt.Errorf("failed to download a release file from %s: %s", downloadURL, err)
 	}
 	defer res.Body.Close()
-
 	if res.StatusCode != http.StatusOK {
-		return fmt.Errorf("failed to download a release file from %s: Not successful status %d", downloadURL, res.StatusCode)
+		return nil, fmt.Errorf("failed to download a release file from %s: Not successful status %d", downloadURL, res.StatusCode)
 	}
 
 	buf, err := ioutil.ReadAll(res.Body)
 	if err != nil {
-		return fmt.Errorf("failed to create buffer for zip file: %s", err)
+		return nil, fmt.Errorf("failed to create buffer for zip file: %s", err)
 	}
 
 	reader := bytes.NewReader(buf)
 	z, err := zip.NewReader(reader, reader.Size())
-
 	if err != nil {
-		return fmt.Errorf("failed to uncompress zip file: %s", err)
+		return nil, fmt.Errorf("failed to uncompress zip file: %s", err)
 	}
 
 	// Create the template folder if it doesn't exists
 	err = os.MkdirAll(r.templatesConfig.TemplatesDirectory, os.ModePerm)
 	if err != nil {
-		return fmt.Errorf("failed to create template base folder: %s", err)
+		return nil, fmt.Errorf("failed to create template base folder: %s", err)
 	}
 
+	results, err := r.compareAndWriteTemplates(z)
+	if err != nil {
+		return nil, fmt.Errorf("failed to write templates: %s", err)
+	}
+
+	r.printUpdateChangelog(results, version)
+	checksumFile := path.Join(r.templatesConfig.TemplatesDirectory, ".checksum")
+	err = writeTemplatesChecksum(checksumFile, results.checksums)
+	if err != nil {
+		return nil, errors.Wrap(err, "could not write checksum")
+	}
+
+	// Write the additions to a cached file for new runs.
+	additionsFile := path.Join(r.templatesConfig.TemplatesDirectory, ".new-additions")
+	buffer := &bytes.Buffer{}
+	for _, addition := range results.additions {
+		buffer.WriteString(addition)
+		buffer.WriteString("\n")
+	}
+	err = ioutil.WriteFile(additionsFile, buffer.Bytes(), os.ModePerm)
+	if err != nil {
+		return nil, errors.Wrap(err, "could not write new additions file")
+	}
+	return results, err
+}
+
+type templateUpdateResults struct {
+	additions     []string
+	deletions     []string
+	modifications []string
+	totalCount    int
+	checksums     map[string]string
+}
+
+// compareAndWriteTemplates compares and returns the stats of a template
+// update operations.
+func (r *Runner) compareAndWriteTemplates(z *zip.Reader) (*templateUpdateResults, error) {
+	results := &templateUpdateResults{
+		checksums: make(map[string]string),
+	}
+
+	// We use file-checksums that are md5 hashes to store the list of files->hashes
+	// that have been downloaded previously.
+	// If the path isn't found in new update after being read from the previous checksum,
+	// it is removed. This allows us fine-grained control over the download process
+	// as well as solves a long problem with nuclei-template updates.
+	checksumFile := path.Join(r.templatesConfig.TemplatesDirectory, ".checksum")
+	previousChecksum, _ := readPreviousTemplatesChecksum(checksumFile)
 	for _, file := range z.File {
 		directory, name := filepath.Split(file.Name)
 		if name == "" {
 			continue
 		}
-
 		paths := strings.Split(directory, "/")
 		finalPath := strings.Join(paths[1:], "/")
 
+		if (!strings.EqualFold(name, ".nuclei-ignore") && strings.HasPrefix(name, ".")) || strings.HasPrefix(finalPath, ".") || strings.EqualFold(name, "README.md") {
+			continue
+		}
+		results.totalCount++
 		templateDirectory := path.Join(r.templatesConfig.TemplatesDirectory, finalPath)
-		err = os.MkdirAll(templateDirectory, os.ModePerm)
-
+		err := os.MkdirAll(templateDirectory, os.ModePerm)
 		if err != nil {
-			return fmt.Errorf("failed to create template folder %s : %s", templateDirectory, err)
+			return nil, fmt.Errorf("failed to create template folder %s : %s", templateDirectory, err)
 		}
 
-		f, err := os.OpenFile(path.Join(templateDirectory, name), os.O_TRUNC|os.O_CREATE|os.O_WRONLY, 0777)
+		templatePath := path.Join(templateDirectory, name)
+
+		isAddition := false
+		if _, statErr := os.Stat(templatePath); os.IsNotExist(statErr) {
+			isAddition = true
+		}
+		f, err := os.OpenFile(templatePath, os.O_TRUNC|os.O_CREATE|os.O_WRONLY, 0777)
 		if err != nil {
 			f.Close()
-			return fmt.Errorf("could not create uncompressed file: %s", err)
+			return nil, fmt.Errorf("could not create uncompressed file: %s", err)
 		}
 
 		reader, err := file.Open()
 		if err != nil {
 			f.Close()
-			return fmt.Errorf("could not open archive to extract file: %s", err)
+			return nil, fmt.Errorf("could not open archive to extract file: %s", err)
 		}
+		hasher := md5.New()
 
-		_, err = io.Copy(f, reader)
+		// Save file and also read into hasher for md5
+		_, err = io.Copy(f, io.TeeReader(reader, hasher))
 		if err != nil {
 			f.Close()
-			return fmt.Errorf("could not write template file: %s", err)
+			return nil, fmt.Errorf("could not write template file: %s", err)
 		}
-
 		f.Close()
+
+		oldChecksum, checksumOK := previousChecksum[templatePath]
+
+		checksum := hex.EncodeToString(hasher.Sum(nil))
+		if isAddition {
+			results.additions = append(results.additions, path.Join(finalPath, name))
+		} else if checksumOK && oldChecksum[0] != checksum {
+			results.modifications = append(results.modifications, path.Join(finalPath, name))
+		}
+		results.checksums[templatePath] = checksum
 	}
 
+	// If we don't find a previous file in new download and it hasn't been
+	// changed on the disk, delete it.
+	for k, v := range previousChecksum {
+		_, ok := results.checksums[k]
+		if !ok && v[0] == v[1] {
+			os.Remove(k)
+			results.deletions = append(results.deletions, strings.TrimPrefix(strings.TrimPrefix(k, r.templatesConfig.TemplatesDirectory), "/"))
+		}
+	}
+	return results, nil
+}
+
+// readPreviousTemplatesChecksum reads the previous checksum file from the disk.
+//
+// It reads two checksums, the first checksum is what we expect and the second is
+// the actual checksum of the file on disk currently.
+func readPreviousTemplatesChecksum(file string) (map[string][2]string, error) {
+	f, err := os.Open(file)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	scanner := bufio.NewScanner(f)
+
+	checksum := make(map[string][2]string)
+	for scanner.Scan() {
+		text := scanner.Text()
+		if text == "" {
+			continue
+		}
+		parts := strings.Split(text, ",")
+		if len(parts) < 2 {
+			continue
+		}
+		values := [2]string{parts[1]}
+
+		f, err := os.Open(parts[0])
+		if err != nil {
+			return nil, err
+		}
+
+		hasher := md5.New()
+		if _, err := io.Copy(hasher, f); err != nil {
+			return nil, err
+		}
+		f.Close()
+
+		values[1] = hex.EncodeToString(hasher.Sum(nil))
+		checksum[parts[0]] = values
+	}
+	return checksum, nil
+}
+
+// writeTemplatesChecksum writes the nuclei-templates checksum data to disk.
+func writeTemplatesChecksum(file string, checksum map[string]string) error {
+	f, err := os.Create(file)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	builder := &strings.Builder{}
+	for k, v := range checksum {
+		builder.WriteString(k)
+		builder.WriteString(",")
+		builder.WriteString(v)
+		builder.WriteString("\n")
+
+		if _, checksumErr := f.WriteString(builder.String()); checksumErr != nil {
+			return err
+		}
+		builder.Reset()
+	}
 	return nil
+}
+
+func (r *Runner) printUpdateChangelog(results *templateUpdateResults, version string) {
+	if len(results.additions) > 0 {
+		gologger.Print().Msgf("\nNewly added templates: \n\n")
+
+		for _, addition := range results.additions {
+			gologger.Print().Msgf("%s", addition)
+		}
+	}
+
+	gologger.Print().Msgf("\nNuclei Templates v%s Changelog\n", version)
+	data := [][]string{
+		{strconv.Itoa(results.totalCount), strconv.Itoa(len(results.additions)), strconv.Itoa(len(results.deletions))},
+	}
+	table := tablewriter.NewWriter(os.Stdout)
+	table.SetHeader([]string{"Total", "Added", "Removed"})
+	for _, v := range data {
+		table.Append(v)
+	}
+	table.Render()
 }
