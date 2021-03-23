@@ -13,6 +13,7 @@ func (w *StandardWriter) formatScreen(output *ResultEvent) []byte {
 	if !w.noMetadata {
 		builder.WriteRune('[')
 		builder.WriteString(w.aurora.BrightGreen(output.TemplateID).String())
+
 		if output.MatcherName != "" {
 			builder.WriteString(":")
 			builder.WriteString(w.aurora.BrightGreen(output.MatcherName).Bold().String())
@@ -20,6 +21,7 @@ func (w *StandardWriter) formatScreen(output *ResultEvent) []byte {
 			builder.WriteString(":")
 			builder.WriteString(w.aurora.BrightGreen(output.ExtractorName).Bold().String())
 		}
+		builder.WriteString("] ")
 	}
 	builder.WriteString(output.Matched)
 
