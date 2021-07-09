@@ -43,7 +43,7 @@ func (w *StandardWriter) formatScreen(output *ResultEvent) []byte {
 	if len(output.Metadata) > 0 {
 		builder.WriteString(" [")
 
-		var first bool
+		first := true
 		for name, value := range output.Metadata {
 			if !first {
 				builder.WriteRune(',')
