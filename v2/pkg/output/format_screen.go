@@ -11,11 +11,11 @@ func (w *StandardWriter) formatScreen(output *ResultEvent) []byte {
 	builder := &bytes.Buffer{}
 
 	if !w.noMetadata {
-		if !w.noTimestamp {
-			builder.WriteRune('[')
-			builder.WriteString(w.aurora.Cyan(output.Timestamp.Format("2006-01-02 15:04:05")).String())
-			builder.WriteString("] ")
-		}
+		//if !w.noTimestamp {
+		//	builder.WriteRune('[')
+		//	builder.WriteString(w.aurora.Cyan(output.Timestamp.Format("2006-01-02 15:04:05")).String())
+		//	builder.WriteString("] ")
+		//}
 		builder.WriteRune('[')
 		builder.WriteString(w.aurora.BrightGreen(output.TemplateID).String())
 
@@ -27,12 +27,12 @@ func (w *StandardWriter) formatScreen(output *ResultEvent) []byte {
 			builder.WriteString(w.aurora.BrightGreen(output.ExtractorName).Bold().String())
 		}
 
-		builder.WriteString("] [")
-		builder.WriteString(w.aurora.BrightBlue(output.Type).String())
-		builder.WriteString("] ")
+		//builder.WriteString("] [")
+		//builder.WriteString(w.aurora.BrightBlue(output.Type).String())
+		//builder.WriteString("] ")
 
-		builder.WriteString("[")
-		builder.WriteString(w.severityColors(output.Info.SeverityHolder.Severity))
+		//builder.WriteString("[")
+		//builder.WriteString(w.severityColors(output.Info.SeverityHolder.Severity))
 		builder.WriteString("] ")
 	}
 	builder.WriteString(output.Matched)
