@@ -297,6 +297,24 @@ Stop execution once first match is found
 
 <hr />
 
+<div class="dd">
+
+<code>signature</code>  <i><a href="#httpsignaturetypeholder">http.SignatureTypeHolder</a></i>
+
+</div>
+<div class="dt">
+
+Signature is the request signature method
+
+
+Valid values:
+
+
+  - <code>AWS</code>
+</div>
+
+<hr />
+
 
 
 
@@ -1182,6 +1200,24 @@ max-size: 2048
 
 <div class="dd">
 
+<code>signature</code>  <i><a href="#signaturetypeholder">SignatureTypeHolder</a></i>
+
+</div>
+<div class="dt">
+
+Signature is the request signature method
+
+
+Valid values:
+
+
+  - <code>AWS</code>
+</div>
+
+<hr />
+
+<div class="dd">
+
 <code>cookie-reuse</code>  <i>bool</i>
 
 </div>
@@ -2056,6 +2092,8 @@ Appears in:
 
 - <code><a href="#networkrequest">network.Request</a>.attack</code>
 
+- <code><a href="#headlessrequest">headless.Request</a>.attack</code>
+
 - <code><a href="#websocketrequest">websocket.Request</a>.attack</code>
 
 
@@ -2136,9 +2174,25 @@ Enum Values:
   - <code>PATCH</code>
 
   - <code>PURGE</code>
+
+  - <code>Debug</code>
 </div>
 
 <hr />
+
+
+
+
+
+## SignatureTypeHolder
+SignatureTypeHolder is used to hold internal type of the signature
+
+Appears in:
+
+
+- <code><a href="#httprequest">http.Request</a>.signature</code>
+
+
 
 
 
@@ -2454,6 +2508,8 @@ Enum Values:
   - <code>TXT</code>
 
   - <code>AAAA</code>
+
+  - <code>CAA</code>
 </div>
 
 <hr />
@@ -3082,6 +3138,39 @@ ID is the optional id of the request
 
 <div class="dd">
 
+<code>attack</code>  <i><a href="#generatorsattacktypeholder">generators.AttackTypeHolder</a></i>
+
+</div>
+<div class="dt">
+
+Attack is the type of payload combinations to perform.
+
+Batteringram is inserts the same payload into all defined payload positions at once, pitchfork combines multiple payload sets and clusterbomb generates
+permutations and combinations for all payloads.
+
+</div>
+
+<hr />
+
+<div class="dd">
+
+<code>payloads</code>  <i>map[string]interface{}</i>
+
+</div>
+<div class="dt">
+
+Payloads contains any payloads for the current request.
+
+Payloads support both key-values combinations where a list
+of payloads is provided, or optionally a single file can also
+be provided as payload which will be read on run-time.
+
+</div>
+
+<hr />
+
+<div class="dd">
+
 <code>steps</code>  <i>[]<a href="#engineaction">engine.Action</a></i>
 
 </div>
@@ -3388,6 +3477,71 @@ Valid values:
 <div class="dt">
 
 Address contains address for the request
+
+</div>
+
+<hr />
+
+<div class="dd">
+
+<code>min_version</code>  <i>string</i>
+
+</div>
+<div class="dt">
+
+Minimum tls version - auto if not specified.
+
+
+Valid values:
+
+
+  - <code>sslv3</code>
+
+  - <code>tls10</code>
+
+  - <code>tls11</code>
+
+  - <code>tls12</code>
+
+  - <code>tls13</code>
+</div>
+
+<hr />
+
+<div class="dd">
+
+<code>max_version</code>  <i>string</i>
+
+</div>
+<div class="dt">
+
+Max tls version - auto if not specified.
+
+
+Valid values:
+
+
+  - <code>sslv3</code>
+
+  - <code>tls10</code>
+
+  - <code>tls11</code>
+
+  - <code>tls12</code>
+
+  - <code>tls13</code>
+</div>
+
+<hr />
+
+<div class="dd">
+
+<code>cipher_suites</code>  <i>[]string</i>
+
+</div>
+<div class="dt">
+
+Client Cipher Suites  - auto if not specified.
 
 </div>
 
@@ -3843,6 +3997,20 @@ Subtemplates are run if the name of matcher matches.
 </div>
 
 <hr />
+
+
+
+
+
+## http.SignatureTypeHolder
+SignatureTypeHolder is used to hold internal type of the signature
+
+Appears in:
+
+
+- <code><a href="#template">Template</a>.signature</code>
+
+
 
 
 

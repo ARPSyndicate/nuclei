@@ -2,8 +2,6 @@ package templates
 
 import (
 	"fmt"
-	"io/ioutil"
-	"os"
 	"reflect"
 	"strings"
 
@@ -38,13 +36,7 @@ func Parse(filePath string, preprocessor Preprocessor, options protocols.Execute
 
 	template := &Template{}
 
-	f, err := os.Open(filePath)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-
-	data, err := ioutil.ReadAll(f)
+	data, err := utils.ReadFromPathOrURL(filePath)
 	if err != nil {
 		return nil, err
 	}
@@ -108,6 +100,11 @@ func Parse(filePath string, preprocessor Preprocessor, options protocols.Execute
 
 // parseSelfContainedRequests parses the self contained template requests.
 func (template *Template) parseSelfContainedRequests() {
+	if template.Signature.Value.String() != "" {
+		for _, request := range template.RequestsHTTP {
+			request.Signature = template.Signature
+		}
+	}
 	if !template.SelfContained {
 		return
 	}

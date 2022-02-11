@@ -153,11 +153,23 @@ func init() {
 			return hex.EncodeToString(hash.Sum(nil)), nil
 		}),
 		"mmh3": makeDslFunction(1, func(args ...interface{}) (interface{}, error) {
-			return fmt.Sprintf("%d", int32(murmur3.Sum32WithSeed([]byte(types.ToString(args[0])), 0))), nil
+			hasher := murmur3.New32WithSeed(0)
+			hasher.Write([]byte(fmt.Sprint(args[0])))
+			return fmt.Sprintf("%d", int32(hasher.Sum32())), nil
 		}),
 		"contains": makeDslFunction(2, func(args ...interface{}) (interface{}, error) {
 			return strings.Contains(types.ToString(args[0]), types.ToString(args[1])), nil
 		}),
+		"concat": makeDslWithOptionalArgsFunction(
+			"(args ...interface{}) string",
+			func(arguments ...interface{}) (interface{}, error) {
+				builder := &strings.Builder{}
+				for _, argument := range arguments {
+					builder.WriteString(types.ToString(argument))
+				}
+				return builder.String(), nil
+			},
+		),
 		"regex": makeDslFunction(2, func(args ...interface{}) (interface{}, error) {
 			compiled, err := regexp.Compile(types.ToString(args[0]))
 			if err != nil {

@@ -129,6 +129,12 @@ type Request struct {
 	SelfContained bool `yaml:"-" json:"-"`
 
 	// description: |
+	//   Signature is the request signature method
+	// values:
+	//   - "AWS"
+	Signature SignatureTypeHolder `yaml:"signature,omitempty" jsonschema:"title=signature is the http request signature method,description=Signature is the HTTP Request signature Method,enum=AWS"`
+
+	// description: |
 	//   CookieReuse is an optional setting that enables cookie reuse for
 	//   all requests defined in raw section.
 	CookieReuse bool `yaml:"cookie-reuse,omitempty" jsonschema:"title=optional cookie reuse enable,description=Optional setting that enables cookie reuse"`
@@ -292,7 +298,13 @@ func (request *Request) Compile(options *protocols.ExecuterOptions) error {
 // Requests returns the total number of requests the YAML rule will perform
 func (request *Request) Requests() int {
 	if request.generator != nil {
-		payloadRequests := request.generator.NewIterator().Total() * len(request.Raw)
+		payloadRequests := request.generator.NewIterator().Total()
+		if len(request.Raw) > 0 {
+			payloadRequests = payloadRequests * len(request.Raw)
+		}
+		if len(request.Path) > 0 {
+			payloadRequests = payloadRequests * len(request.Path)
+		}
 		return payloadRequests
 	}
 	if len(request.Raw) > 0 {

@@ -21,6 +21,11 @@ import (
 	"gopkg.in/yaml.v2"
 )
 
+const (
+	// TemplateExtension defines the template default file extension
+	TemplateExtension = ".yaml"
+)
+
 // Template is a YAML input file which defines all the requests and
 // other metadata for a template.
 type Template struct {
@@ -86,6 +91,12 @@ type Template struct {
 	// description: |
 	//  Stop execution once first match is found
 	StopAtFirstMatch bool `yaml:"stop-at-first-match,omitempty" jsonschema:"title=stop at first match,description=Stop at first match for the template"`
+
+	// description: |
+	//   Signature is the request signature method
+	// values:
+	//   - "AWS"
+	Signature http.SignatureTypeHolder `yaml:"signature,omitempty" jsonschema:"title=signature is the http request signature method,description=Signature is the HTTP Request signature Method,enum=AWS"`
 
 	// TotalRequests is the total number of requests for the template.
 	TotalRequests int `yaml:"-" json:"-"`
