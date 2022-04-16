@@ -167,6 +167,7 @@ file:
     extensions:
         - all
     archive: false
+    mimetype: false
 ```
 
 
@@ -1357,6 +1358,32 @@ SkipVariablesCheck skips the check for unresolved variables in request
 <div class="dt">
 
 IterateAll iterates all the values extracted from internal extractors
+
+</div>
+
+<hr />
+
+<div class="dd">
+
+<code>digest-username</code>  <i>string</i>
+
+</div>
+<div class="dt">
+
+DigestAuthUsername specifies the username for digest authentication
+
+</div>
+
+<hr />
+
+<div class="dd">
+
+<code>digest-password</code>  <i>string</i>
+
+</div>
+<div class="dt">
+
+DigestAuthPassword specifies the password for digest authentication
 
 </div>
 
@@ -2572,6 +2599,7 @@ extractors:
 extensions:
     - all
 archive: false
+mimetype: false
 ```
 
 Part Definitions: 
@@ -2646,7 +2674,7 @@ Valid values:
 </div>
 <div class="dt">
 
-Extensions is the list of extensions to perform matching on.
+Extensions is the list of extensions or mime types to perform matching on.
 
 
 
@@ -2672,7 +2700,7 @@ extensions:
 </div>
 <div class="dt">
 
-DenyList is the list of file, directories or extensions to deny during matching.
+DenyList is the list of file, directories, mime types or extensions to deny during matching.
 
 By default, it contains some non-interesting extensions that are hardcoded
 in nuclei.
