@@ -2,8 +2,11 @@ package runner
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"io/ioutil"
 	"net/http"
 	_ "net/http/pprof"
 	"os"
@@ -11,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/blang/semver"
 	"github.com/logrusorgru/aurora"
 	"github.com/pkg/errors"
 	"go.uber.org/atomic"
@@ -32,6 +36,7 @@ import (
 	"github.com/projectdiscovery/nuclei/v2/pkg/protocols/common/hosterrorscache"
 	"github.com/projectdiscovery/nuclei/v2/pkg/protocols/common/interactsh"
 	"github.com/projectdiscovery/nuclei/v2/pkg/protocols/common/protocolinit"
+	"github.com/projectdiscovery/nuclei/v2/pkg/protocols/common/utils/excludematchers"
 	"github.com/projectdiscovery/nuclei/v2/pkg/protocols/headless/engine"
 	"github.com/projectdiscovery/nuclei/v2/pkg/protocols/http/httpclientpool"
 	"github.com/projectdiscovery/nuclei/v2/pkg/reporting"
@@ -60,7 +65,7 @@ type Runner struct {
 	hmapInputProvider *hybrid.Input
 	browser           *engine.Browser
 	ratelimiter       ratelimit.Limiter
-	hostErrors        *hosterrorscache.Cache
+	hostErrors        hosterrorscache.CacheInterface
 	resumeCfg         *types.ResumeCfg
 	pprofServer       *http.Server
 }
@@ -89,6 +94,8 @@ func New(options *types.Options) (*Runner, error) {
 		// Does not update the templates when validate flag is used
 		options.NoUpdateTemplates = true
 	}
+	parsers.NoStrictSyntax = options.NoStrictSyntax
+
 	if err := runner.updateTemplates(); err != nil {
 		gologger.Error().Msgf("Could not update templates: %s\n", err)
 	}
@@ -306,6 +313,30 @@ func (r *Runner) RunEnumeration() error {
 		}
 		r.options.Templates = append(r.options.Templates, templatesLoaded...)
 	}
+	if len(r.options.NewTemplatesWithVersion) > 0 {
+		minVersion, err := semver.Parse("8.8.4")
+		if err != nil {
+			return errors.Wrap(err, "could not parse minimum version")
+		}
+		latestVersion, err := semver.Parse(r.templatesConfig.NucleiTemplatesLatestVersion)
+		if err != nil {
+			return errors.Wrap(err, "could not get latest version")
+		}
+		for _, version := range r.options.NewTemplatesWithVersion {
+			current, err := semver.Parse(strings.Trim(version, "v"))
+			if err != nil {
+				return errors.Wrap(err, "could not parse current version")
+			}
+			if !(current.GT(minVersion) && current.LTE(latestVersion)) {
+				return fmt.Errorf("version should be greater than %s and less than %s", minVersion, latestVersion)
+			}
+			templatesLoaded, err := r.readNewTemplatesWithVersionFile(fmt.Sprintf("v%s", current))
+			if err != nil {
+				return errors.Wrap(err, "could not get newly added templates for "+current.String())
+			}
+			r.options.Templates = append(r.options.Templates, templatesLoaded...)
+		}
+	}
 	// Exclude ignored file for validation
 	if !r.options.Validate {
 		ignoreFile := config.ReadIgnoreFile()
@@ -314,7 +345,8 @@ func (r *Runner) RunEnumeration() error {
 	}
 	var cache *hosterrorscache.Cache
 	if r.options.MaxHostError > 0 {
-		cache = hosterrorscache.New(r.options.MaxHostError, hosterrorscache.DefaultMaxHostsCount).SetVerbose(r.options.Verbose)
+		cache = hosterrorscache.New(r.options.MaxHostError, hosterrorscache.DefaultMaxHostsCount)
+		cache.SetVerbose(r.options.Verbose)
 	}
 	r.hostErrors = cache
 
@@ -333,6 +365,7 @@ func (r *Runner) RunEnumeration() error {
 		HostErrorsCache: cache,
 		Colorizer:       r.colorizer,
 		ResumeCfg:       r.resumeCfg,
+		ExcludeMatchers: excludematchers.New(r.options.ExcludeMatchers),
 	}
 	engine := core.New(r.options)
 	engine.SetExecuterOptions(executerOpts)
@@ -513,6 +546,31 @@ func (r *Runner) displayExecutionInfo(store *loader.Store) {
 	if len(store.Workflows()) > 0 {
 		gologger.Info().Msgf("Workflows loaded for scan: %d", len(store.Workflows()))
 	}
+}
+func (r *Runner) readNewTemplatesWithVersionFile(version string) ([]string, error) {
+	resp, err := http.DefaultClient.Get(fmt.Sprintf("https://raw.githubusercontent.com/projectdiscovery/nuclei-templates/%s/.new-additions", version))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, errors.New("version not found")
+	}
+	data, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	templatesList := []string{}
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	for scanner.Scan() {
+		text := scanner.Text()
+		if text == "" {
+			continue
+		}
+		if isTemplate(text) {
+			templatesList = append(templatesList, text)
+		}
+	}
+	return templatesList, nil
 }
 
 // readNewTemplatesFile reads newly added templates from directory if it exists

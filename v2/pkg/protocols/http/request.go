@@ -2,6 +2,7 @@ package http
 
 import (
 	"bytes"
+	"context"
 	"encoding/hex"
 	"fmt"
 	"io"
@@ -56,7 +57,7 @@ func (request *Request) executeRaceRequest(reqURL string, previous output.Intern
 	if !ok {
 		return nil
 	}
-	requestForDump, err := generator.Make(reqURL, inputData, payloads, nil)
+	requestForDump, err := generator.Make(context.Background(), reqURL, inputData, payloads, nil)
 	if err != nil {
 		return err
 	}
@@ -84,7 +85,7 @@ func (request *Request) executeRaceRequest(reqURL string, previous output.Intern
 		if !ok {
 			break
 		}
-		generatedRequest, err := generator.Make(reqURL, inputData, payloads, nil)
+		generatedRequest, err := generator.Make(context.Background(), reqURL, inputData, payloads, nil)
 		if err != nil {
 			return err
 		}
@@ -127,7 +128,7 @@ func (request *Request) executeParallelHTTP(reqURL string, dynamicValues output.
 		if !ok {
 			break
 		}
-		generatedHttpRequest, err := generator.Make(reqURL, inputData, payloads, dynamicValues)
+		generatedHttpRequest, err := generator.Make(context.Background(), reqURL, inputData, payloads, dynamicValues)
 		if err != nil {
 			if err == io.EOF {
 				break
@@ -194,7 +195,7 @@ func (request *Request) executeTurboHTTP(reqURL string, dynamicValues, previous 
 		if !ok {
 			break
 		}
-		generatedHttpRequest, err := generator.Make(reqURL, inputData, payloads, dynamicValues)
+		generatedHttpRequest, err := generator.Make(context.Background(), reqURL, inputData, payloads, dynamicValues)
 		if err != nil {
 			request.options.Progress.IncrementFailedRequestsBy(int64(generator.Total()))
 			return err
@@ -222,6 +223,10 @@ func (request *Request) executeTurboHTTP(reqURL string, dynamicValues, previous 
 
 // ExecuteWithResults executes the final request on a URL
 func (request *Request) ExecuteWithResults(reqURL string, dynamicValues, previous output.InternalEvent, callback protocols.OutputEventCallback) error {
+	if request.Pipeline || request.Race && request.RaceNumberRequests > 0 || request.Threads > 0 {
+		variablesMap := request.options.Variables.Evaluate(generators.MergeMaps(dynamicValues, previous))
+		dynamicValues = generators.MergeMaps(variablesMap, dynamicValues)
+	}
 	// verify if pipeline was requested
 	if request.Pipeline {
 		return request.executeTurboHTTP(reqURL, dynamicValues, previous, callback)
@@ -229,7 +234,7 @@ func (request *Request) ExecuteWithResults(reqURL string, dynamicValues, previou
 
 	// verify if a basic race condition was requested
 	if request.Race && request.RaceNumberRequests > 0 {
-		return request.executeRaceRequest(reqURL, previous, callback)
+		return request.executeRaceRequest(reqURL, dynamicValues, callback)
 	}
 
 	// verify if parallel elaboration was requested
@@ -245,16 +250,23 @@ func (request *Request) ExecuteWithResults(reqURL string, dynamicValues, previou
 		// returns two values, error and skip, which skips the execution for the request instance.
 		executeFunc := func(data string, payloads, dynamicValue map[string]interface{}) (bool, error) {
 			hasInteractMatchers := interactsh.HasMatchers(request.CompiledOperators)
-			variablesMap := request.options.Variables.Evaluate(generators.MergeMaps(dynamicValues, payloads))
+			variablesMap, interactURLs := request.options.Variables.EvaluateWithInteractsh(generators.MergeMaps(dynamicValues, payloads), request.options.Interactsh)
 			dynamicValue = generators.MergeMaps(variablesMap, dynamicValue)
 
-			generatedHttpRequest, err := generator.Make(reqURL, data, payloads, dynamicValue)
+			ctx, cancel := context.WithTimeout(context.Background(), time.Duration(request.options.Options.Timeout)*time.Second)
+			defer cancel()
+
+			generatedHttpRequest, err := generator.Make(ctx, reqURL, data, payloads, dynamicValue)
 			if err != nil {
 				if err == io.EOF {
 					return true, nil
 				}
 				request.options.Progress.IncrementFailedRequestsBy(int64(generator.Total()))
 				return true, err
+			}
+			// If the variables contain interactsh urls, use them
+			if len(interactURLs) > 0 {
+				generatedHttpRequest.interactshURLs = append(generatedHttpRequest.interactshURLs, interactURLs...)
 			}
 			hasInteractMarkers := interactsh.HasMarkers(data) || len(generatedHttpRequest.interactshURLs) > 0
 			if reqURL == "" {
@@ -291,8 +303,8 @@ func (request *Request) ExecuteWithResults(reqURL string, dynamicValues, previou
 				return true, nil
 			}
 			if err != nil {
-				if request.options.HostErrorsCache != nil && request.options.HostErrorsCache.CheckError(err) {
-					request.options.HostErrorsCache.MarkFailed(reqURL)
+				if request.options.HostErrorsCache != nil {
+					request.options.HostErrorsCache.MarkFailed(reqURL, err)
 				}
 				requestErr = err
 			}
@@ -400,12 +412,12 @@ func (request *Request) executeRequest(reqURL string, generatedRequest *generate
 		if parsed, parseErr := url.Parse(formedURL); parseErr == nil {
 			hostname = parsed.Host
 		}
-		options := generatedRequest.original.rawhttpClient.Options
+		options := *generatedRequest.original.rawhttpClient.Options
 		options.FollowRedirects = request.Redirects
 		options.CustomRawBytes = generatedRequest.rawRequest.UnsafeRawBytes
 		options.ForceReadAllBody = request.ForceReadAllBody
 		options.SNI = request.options.Options.SNI
-		resp, err = generatedRequest.original.rawhttpClient.DoRawWithOptions(generatedRequest.rawRequest.Method, reqURL, generatedRequest.rawRequest.Path, generators.ExpandMapValues(generatedRequest.rawRequest.Headers), ioutil.NopCloser(strings.NewReader(generatedRequest.rawRequest.Data)), options)
+		resp, err = generatedRequest.original.rawhttpClient.DoRawWithOptions(generatedRequest.rawRequest.Method, reqURL, generatedRequest.rawRequest.Path, generators.ExpandMapValues(generatedRequest.rawRequest.Headers), ioutil.NopCloser(strings.NewReader(generatedRequest.rawRequest.Data)), &options)
 	} else {
 		hostname = generatedRequest.request.URL.Host
 		formedURL = generatedRequest.request.URL.String()

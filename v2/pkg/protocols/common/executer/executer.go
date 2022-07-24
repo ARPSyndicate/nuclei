@@ -87,14 +87,16 @@ func (e *Executer) Execute(input string) (bool, error) {
 			} else {
 				if writer.WriteResult(event, e.options.Output, e.options.Progress, e.options.IssuesClient) {
 					results = true
+				} else {
+					if err := e.options.Output.WriteFailure(event.InternalEvent); err != nil {
+						gologger.Warning().Msgf("Could not write failure event to output: %s\n", err)
+					}
 				}
 			}
 		})
 		if err != nil {
 			if e.options.HostErrorsCache != nil {
-				if e.options.HostErrorsCache.CheckError(err) {
-					e.options.HostErrorsCache.MarkFailed(input)
-				}
+				e.options.HostErrorsCache.MarkFailed(input, err)
 			}
 			gologger.Warning().Msgf("[%s] Could not execute request for %s: %s\n", e.options.TemplateID, input, err)
 		}
@@ -135,9 +137,7 @@ func (e *Executer) ExecuteWithResults(input string, callback protocols.OutputEve
 		})
 		if err != nil {
 			if e.options.HostErrorsCache != nil {
-				if e.options.HostErrorsCache.CheckError(err) {
-					e.options.HostErrorsCache.MarkFailed(input)
-				}
+				e.options.HostErrorsCache.MarkFailed(input, err)
 			}
 			gologger.Warning().Msgf("[%s] Could not execute request for %s: %s\n", e.options.TemplateID, input, err)
 		}

@@ -7,7 +7,6 @@ import (
 
 	"gopkg.in/yaml.v2"
 
-	"github.com/projectdiscovery/gologger"
 	"github.com/projectdiscovery/nuclei/v2/pkg/catalog/loader/filter"
 	"github.com/projectdiscovery/nuclei/v2/pkg/model"
 	"github.com/projectdiscovery/nuclei/v2/pkg/templates"
@@ -103,7 +102,7 @@ func validateTemplateFields(template *templates.Template) error {
 var (
 	parsedTemplatesCache *cache.Templates
 	ShouldValidate       bool
-	fieldErrorRegexp     = regexp.MustCompile(`not found in`)
+	NoStrictSyntax       bool
 	templateIDRegexp     = regexp.MustCompile(`^([a-zA-Z0-9]+[-_])*[a-zA-Z0-9]+$`)
 )
 
@@ -133,18 +132,14 @@ func ParseTemplate(templatePath string) (*templates.Template, error) {
 	}
 
 	template := &templates.Template{}
-	if err := yaml.UnmarshalStrict(data, template); err != nil {
-		errString := err.Error()
-		if !fieldErrorRegexp.MatchString(errString) {
-			stats.Increment(SyntaxErrorStats)
-			return nil, err
-		}
-		stats.Increment(SyntaxWarningStats)
-		if ShouldValidate {
-			gologger.Error().Msgf("Syntax warnings for template %s: %s", templatePath, err)
-		} else {
-			gologger.Warning().Msgf("Syntax warnings for template %s: %s", templatePath, err)
-		}
+	if NoStrictSyntax {
+		err = yaml.Unmarshal(data, template)
+	} else {
+		err = yaml.UnmarshalStrict(data, template)
+	}
+	if err != nil {
+		stats.Increment(SyntaxErrorStats)
+		return nil, err
 	}
 	parsedTemplatesCache.Store(templatePath, template, nil)
 	return template, nil

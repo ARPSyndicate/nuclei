@@ -15,6 +15,7 @@ import (
 	"github.com/projectdiscovery/nuclei/v2/pkg/projectfile"
 	"github.com/projectdiscovery/nuclei/v2/pkg/protocols/common/hosterrorscache"
 	"github.com/projectdiscovery/nuclei/v2/pkg/protocols/common/interactsh"
+	"github.com/projectdiscovery/nuclei/v2/pkg/protocols/common/utils/excludematchers"
 	"github.com/projectdiscovery/nuclei/v2/pkg/protocols/common/variables"
 	"github.com/projectdiscovery/nuclei/v2/pkg/protocols/headless/engine"
 	"github.com/projectdiscovery/nuclei/v2/pkg/reporting"
@@ -61,11 +62,13 @@ type ExecuterOptions struct {
 	// Interactsh is a client for interactsh oob polling server
 	Interactsh *interactsh.Client
 	// HostErrorsCache is an optional cache for handling host errors
-	HostErrorsCache *hosterrorscache.Cache
+	HostErrorsCache hosterrorscache.CacheInterface
 	// Stop execution once first match is found
 	StopAtFirstMatch bool
 	// Variables is a list of variables from template
 	Variables variables.Variable
+	// ExcludeMatchers is the list of matchers to exclude
+	ExcludeMatchers *excludematchers.ExcludeMatchers
 
 	Operators []*operators.Operators // only used by offlinehttp module
 
