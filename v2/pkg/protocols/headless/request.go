@@ -41,7 +41,7 @@ func (request *Request) ExecuteWithResults(input *contextargs.Context, metadata,
 	payloads := generators.BuildPayloadFromOptions(request.options.Options)
 	values := generators.MergeMaps(vars, metadata, payloads)
 	variablesMap := request.options.Variables.Evaluate(values)
-	payloads = generators.MergeMaps(variablesMap, payloads)
+	payloads = generators.MergeMaps(variablesMap, payloads, request.options.Constants)
 
 	// check for operator matches by wrapping callback
 	gotmatches := false
@@ -159,7 +159,7 @@ func (request *Request) executeRequestWithPayloads(inputURL string, payloads map
 	return nil
 }
 
-func dumpResponse(event *output.InternalWrappedEvent, requestOptions *protocols.ExecuterOptions, responseBody string, input string) {
+func dumpResponse(event *output.InternalWrappedEvent, requestOptions *protocols.ExecutorOptions, responseBody string, input string) {
 	cliOptions := requestOptions.Options
 	if cliOptions.Debug || cliOptions.DebugResponse {
 		highlightedResponse := responsehighlighter.Highlight(event.OperatorsResult, responseBody, cliOptions.NoColor, false)
