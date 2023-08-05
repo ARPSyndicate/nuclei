@@ -2,6 +2,7 @@ package types
 
 import (
 	"io"
+	"strings"
 	"time"
 
 	"github.com/projectdiscovery/goflags"
@@ -93,6 +94,8 @@ type Options struct {
 	ReportingConfig string
 	// MarkdownExportDirectory is the directory to export reports in Markdown format
 	MarkdownExportDirectory string
+	// MarkdownExportSortMode is the method to sort the markdown reports (options: severity, template, host, none)
+	MarkdownExportSortMode string
 	// SarifExport is the file to export sarif output format to
 	SarifExport string
 	// CloudURL is the URL for the nuclei cloud endpoint
@@ -195,6 +198,8 @@ type Options struct {
 	Headless bool
 	// ShowBrowser specifies whether the show the browser in headless mode
 	ShowBrowser bool
+	// HeadlessOptionalArguments specifies optional arguments to pass to Chrome
+	HeadlessOptionalArguments goflags.StringSlice
 	// NoTables disables pretty printing of cloud results in tables
 	NoTables bool
 	// DisableClustering disables clustering of templates
@@ -438,4 +443,18 @@ func (options *Options) HasCloudOptions() bool {
 
 func (options *Options) ShouldUseHostError() bool {
 	return options.MaxHostError > 0 && !options.NoHostErrors
+}
+
+func (options *Options) ParseHeadlessOptionalArguments() map[string]string {
+	optionalArguments := make(map[string]string)
+	for _, v := range options.HeadlessOptionalArguments {
+		if argParts := strings.SplitN(v, "=", 2); len(argParts) >= 2 {
+			key := strings.TrimSpace(argParts[0])
+			value := strings.TrimSpace(argParts[1])
+			if key != "" && value != "" {
+				optionalArguments[key] = value
+			}
+		}
+	}
+	return optionalArguments
 }

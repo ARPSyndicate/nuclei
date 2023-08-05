@@ -114,6 +114,10 @@ func validateOptions(options *types.Options) error {
 		return errors.New("both verbose and silent mode specified")
 	}
 
+	if (options.HeadlessOptionalArguments != nil || options.ShowBrowser || options.UseInstalledChrome) && !options.Headless {
+		return errors.New("headless mode (-headless) is required if -ho, -sb, -sc or -lha are set")
+	}
+
 	if options.FollowHostRedirects && options.FollowRedirects {
 		return errors.New("both follow host redirects and follow redirects specified")
 	}
@@ -407,6 +411,13 @@ func readEnvInputVars(options *types.Options) {
 	options.GitLabTemplateDisableDownload = getBoolEnvValue("DISABLE_NUCLEI_TEMPLATES_GITLAB_DOWNLOAD")
 	options.AwsTemplateDisableDownload = getBoolEnvValue("DISABLE_NUCLEI_TEMPLATES_AWS_DOWNLOAD")
 	options.AzureTemplateDisableDownload = getBoolEnvValue("DISABLE_NUCLEI_TEMPLATES_AZURE_DOWNLOAD")
+
+	// Options to modify the behavior of exporters
+	options.MarkdownExportSortMode = strings.ToLower(os.Getenv("MARKDOWN_EXPORT_SORT_MODE"))
+	// If the user has not specified a valid sort mode, use the default
+	if options.MarkdownExportSortMode != "template" && options.MarkdownExportSortMode != "severity" && options.MarkdownExportSortMode != "host" {
+		options.MarkdownExportSortMode = ""
+	}
 }
 
 func getBoolEnvValue(key string) bool {
