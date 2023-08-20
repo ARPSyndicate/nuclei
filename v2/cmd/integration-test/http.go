@@ -172,7 +172,7 @@ func (h *httpInteractshStopAtFirstMatchRequest) Execute(filePath string) error {
 	if err != nil {
 		return err
 	}
-	// polling is asyncronous, so the interactions may be retrieved after the first request
+	// polling is asynchronous, so the interactions may be retrieved after the first request
 	return expectResultsCount(results, 1)
 }
 
@@ -1453,9 +1453,23 @@ func (h *httpDisablePathAutomerge) Execute(filePath string) error {
 	router.GET("/api/v1/test", func(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
 		fmt.Fprint(w, r.URL.Query().Get("id"))
 	})
+	router.GET("/", func(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
+		fmt.Fprint(w, "empty path in raw request")
+	})
+
 	ts := httptest.NewServer(router)
 	defer ts.Close()
 	got, err := testutils.RunNucleiTemplateAndGetResults(filePath, ts.URL+"/api/v1/user", debug)
+	if err != nil {
+		return err
+	}
+	return expectResultsCount(got, 2)
+}
+
+type httpInteractshRequestsWithMCAnd struct{}
+
+func (h *httpInteractshRequestsWithMCAnd) Execute(filePath string) error {
+	got, err := testutils.RunNucleiTemplateAndGetResults(filePath, "honey.scanme.sh", debug)
 	if err != nil {
 		return err
 	}
