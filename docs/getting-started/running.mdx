@@ -402,9 +402,14 @@ STATISTICS:
    -stats                    display statistics about the running scan
    -sj, -stats-json          write statistics data to an output file in JSONL(ines) format
    -si, -stats-interval int  number of seconds to wait between showing a statistics update (default 5)
-   -m, -metrics              expose nuclei metrics on a port
    -mp, -metrics-port int    port to expose nuclei metrics on (default 9092)
 ```
+
+<Tip>
+  From Nuclei v3.0.0 `-metrics` port has been removed and merged with `-stats`
+  when using `-stats` flag metrics will be by default available at `localhost:9092/metrics`
+  and metrics-port can be configured by `-metrics-port` flag
+</Tip>
 
 ### Rate **Limits**
 
@@ -694,7 +699,7 @@ Nuclei comes with reporting module support with the release of [v2.3.0](https://
 | ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Support**  | <svg className="dark:fill-gray-300" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24"><path fill-rule="evenodd" d="M1 12C1 5.925 5.925 1 12 1s11 4.925 11 11-4.925 11-11 11S1 18.075 1 12zm16.28-2.72a.75.75 0 00-1.06-1.06l-5.97 5.97-2.47-2.47a.75.75 0 00-1.06 1.06l3 3a.75.75 0 001.06 0l6.5-6.5z"></path></svg> | <svg className="dark:fill-gray-300" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24"><path fill-rule="evenodd" d="M1 12C1 5.925 5.925 1 12 1s11 4.925 11 11-4.925 11-11 11S1 18.075 1 12zm16.28-2.72a.75.75 0 00-1.06-1.06l-5.97 5.97-2.47-2.47a.75.75 0 00-1.06 1.06l3 3a.75.75 0 001.06 0l6.5-6.5z"></path></svg> | <svg className="dark:fill-gray-300" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24"><path fill-rule="evenodd" d="M1 12C1 5.925 5.925 1 12 1s11 4.925 11 11-4.925 11-11 11S1 18.075 1 12zm16.28-2.72a.75.75 0 00-1.06-1.06l-5.97 5.97-2.47-2.47a.75.75 0 00-1.06 1.06l3 3a.75.75 0 001.06 0l6.5-6.5z"></path></svg> | <svg className="dark:fill-gray-300" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24"><path fill-rule="evenodd" d="M1 12C1 5.925 5.925 1 12 1s11 4.925 11 11-4.925 11-11 11S1 18.075 1 12zm16.28-2.72a.75.75 0 00-1.06-1.06l-5.97 5.97-2.47-2.47a.75.75 0 00-1.06 1.06l3 3a.75.75 0 001.06 0l6.5-6.5z"></path></svg> | <svg className="dark:fill-gray-300" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24"><path fill-rule="evenodd" d="M1 12C1 5.925 5.925 1 12 1s11 4.925 11 11-4.925 11-11 11S1 18.075 1 12zm16.28-2.72a.75.75 0 00-1.06-1.06l-5.97 5.97-2.47-2.47a.75.75 0 00-1.06 1.06l3 3a.75.75 0 001.06 0l6.5-6.5z"></path></svg> | <svg className="dark:fill-gray-300" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24"><path fill-rule="evenodd" d="M1 12C1 5.925 5.925 1 12 1s11 4.925 11 11-4.925 11-11 11S1 18.075 1 12zm16.28-2.72a.75.75 0 00-1.06-1.06l-5.97 5.97-2.47-2.47a.75.75 0 00-1.06 1.06l3 3a.75.75 0 001.06 0l6.5-6.5z"></path></svg> | <svg className="dark:fill-gray-300" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24"><path fill-rule="evenodd" d="M1 12C1 5.925 5.925 1 12 1s11 4.925 11 11-4.925 11-11 11S1 18.075 1 12zm16.28-2.72a.75.75 0 00-1.06-1.06l-5.97 5.97-2.47-2.47a.75.75 0 00-1.06 1.06l3 3a.75.75 0 001.06 0l6.5-6.5z"></path></svg> |
 
-`-rc, -report-config` flag can be used to provide a config file to read configuration details of the platform to integrate. Here is an [example config file](https://github.com/projectdiscovery/nuclei/blob/master/v2/cmd/nuclei/issue-tracker-config.yaml) for all supported platforms.
+`-rc, -report-config` flag can be used to provide a config file to read configuration details of the platform to integrate. Here is an [example config file](https://github.com/projectdiscovery/nuclei/blob/main/cmd/nuclei/issue-tracker-config.yaml) for all supported platforms.
 
 For example, to create tickets on GitHub, create a config file with the following content and replace the appropriate values:
 
@@ -707,6 +712,21 @@ github:
   token: '$token'
   project-name: 'testing-project'
   issue-label: 'Nuclei'
+```
+
+Alternatively if you use GitLab, create a config file following content and replace the appropriate values:
+
+```yaml
+# GitLab contains configuration options for GitLab issue tracker
+
+gitlab:
+  username: '$user'
+  base-url: 'gitlab.com'
+  token: '$token'
+  project-name: 'testing-project'
+  issue-label: 'nuclei-label'
+  severity-as-label: true
+  duplicate-issue-check: true
 ```
 
 To store results in Elasticsearch, create a config file with the following content and replace the appropriate values:
@@ -837,7 +857,7 @@ It is also possible to visualize Nuclei results using **SARIF** files.
 
 1. By uploading a SARIF file to [SARIF Viewer](https://microsoft.github.io/sarif-web-component/)
 
-2. By uploading a SARIF file to []Github Actions](https://docs.github.com/en/code-security/code-scanning/integrating-with-code-scanning/uploading-a-sarif-file-to-github)
+2. By uploading a SARIF file to [Github Actions](https://docs.github.com/en/code-security/code-scanning/integrating-with-code-scanning/uploading-a-sarif-file-to-github)
 
 More info on the SARIF output is documented [here](https://github.com/projectdiscovery/nuclei/pull/2925).
 
@@ -854,7 +874,6 @@ Nuclei expose running scan metrics on a local port `9092` when `-metrics` flag i
 Here is an example to query `metrics` while running nuclei as following `nuclei -t cves/ -l urls.txt -metrics`
 
 ```bash
-
 curl -s localhost:9092/metrics | jq .
 ```
 
