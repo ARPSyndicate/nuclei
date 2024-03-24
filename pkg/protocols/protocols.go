@@ -10,9 +10,11 @@ import (
 
 	"github.com/logrusorgru/aurora"
 
+	"github.com/projectdiscovery/nuclei/v3/pkg/authprovider"
 	"github.com/projectdiscovery/nuclei/v3/pkg/catalog"
 	"github.com/projectdiscovery/nuclei/v3/pkg/input"
 	"github.com/projectdiscovery/nuclei/v3/pkg/js/compiler"
+	"github.com/projectdiscovery/nuclei/v3/pkg/loader/parser"
 	"github.com/projectdiscovery/nuclei/v3/pkg/model"
 	"github.com/projectdiscovery/nuclei/v3/pkg/operators"
 	"github.com/projectdiscovery/nuclei/v3/pkg/operators/extractors"
@@ -116,6 +118,11 @@ type ExecutorOptions struct {
 	// based on given logic. by default nuclei reverts to using value of `-c` when threads count
 	// is not specified or is 0 in template
 	OverrideThreadsCount PayloadThreadSetterCallback
+	// AuthProvider is a provider for auth strategies
+	AuthProvider authprovider.AuthProvider
+	//TemporaryDirectory is the directory to store temporary files
+	TemporaryDirectory string
+	Parser             parser.Parser
 }
 
 // GetThreadsForPayloadRequests returns the number of threads to use as default for
@@ -124,13 +131,11 @@ func (e *ExecutorOptions) GetThreadsForNPayloadRequests(totalRequests int, curre
 	if e.OverrideThreadsCount != nil {
 		return e.OverrideThreadsCount(e, totalRequests, currentThreads)
 	}
-	if currentThreads != 0 {
+	if currentThreads > 0 {
 		return currentThreads
+	} else {
+		return e.Options.PayloadConcurrency
 	}
-	if totalRequests <= 0 {
-		return e.Options.TemplateThreads
-	}
-	return totalRequests
 }
 
 // CreateTemplateCtxStore creates template context store (which contains templateCtx for every scan)

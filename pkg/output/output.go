@@ -73,6 +73,10 @@ var decolorizerRegex = regexp.MustCompile(`\x1B\[[0-9;]*[a-zA-Z]`)
 // InternalEvent is an internal output generation structure for nuclei.
 type InternalEvent map[string]interface{}
 
+func (ie InternalEvent) Set(k string, v interface{}) {
+	ie[k] = v
+}
+
 // InternalWrappedEvent is a wrapped event with operators result added to it.
 type InternalWrappedEvent struct {
 	// Mutex is internal field which is implicitly used
@@ -165,8 +169,18 @@ type ResultEvent struct {
 	// Lines is the line count for the specified match
 	Lines []int `json:"matched-line,omitempty"`
 
+	// IssueTrackers is the metadata for issue trackers
+	IssueTrackers map[string]IssueTrackerMetadata `json:"issue_trackers,omitempty"`
+
 	FileToIndexPosition map[string]int `json:"-"`
 	Error               string         `json:"error,omitempty"`
+}
+
+type IssueTrackerMetadata struct {
+	// IssueID is the ID of the issue created
+	IssueID string `json:"id,omitempty"`
+	// IssueURL is the URL of the issue created
+	IssueURL string `json:"url,omitempty"`
 }
 
 // NewStandardWriter creates a new output writer based on user configurations

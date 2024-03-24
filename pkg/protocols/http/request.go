@@ -10,10 +10,10 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pkg/errors"
-	"github.com/remeh/sizedwaitgroup"
 	"go.uber.org/multierr"
 	"moul.io/http2curl"
 
@@ -24,21 +24,21 @@ import (
 	"github.com/projectdiscovery/nuclei/v3/pkg/protocols"
 	"github.com/projectdiscovery/nuclei/v3/pkg/protocols/common/contextargs"
 	"github.com/projectdiscovery/nuclei/v3/pkg/protocols/common/expressions"
-	"github.com/projectdiscovery/nuclei/v3/pkg/protocols/common/fuzz"
 	"github.com/projectdiscovery/nuclei/v3/pkg/protocols/common/generators"
 	"github.com/projectdiscovery/nuclei/v3/pkg/protocols/common/helpers/eventcreator"
 	"github.com/projectdiscovery/nuclei/v3/pkg/protocols/common/helpers/responsehighlighter"
 	"github.com/projectdiscovery/nuclei/v3/pkg/protocols/common/interactsh"
-	"github.com/projectdiscovery/nuclei/v3/pkg/protocols/common/tostring"
+	"github.com/projectdiscovery/nuclei/v3/pkg/protocols/common/protocolstate"
 	"github.com/projectdiscovery/nuclei/v3/pkg/protocols/http/httpclientpool"
 	"github.com/projectdiscovery/nuclei/v3/pkg/protocols/http/httputils"
 	"github.com/projectdiscovery/nuclei/v3/pkg/protocols/http/signer"
 	"github.com/projectdiscovery/nuclei/v3/pkg/protocols/http/signerpool"
-	protocolutil "github.com/projectdiscovery/nuclei/v3/pkg/protocols/utils"
 	templateTypes "github.com/projectdiscovery/nuclei/v3/pkg/templates/types"
 	"github.com/projectdiscovery/nuclei/v3/pkg/types"
 	"github.com/projectdiscovery/rawhttp"
 	convUtil "github.com/projectdiscovery/utils/conversion"
+	errorutil "github.com/projectdiscovery/utils/errors"
+	httpUtils "github.com/projectdiscovery/utils/http"
 	"github.com/projectdiscovery/utils/reader"
 	sliceutil "github.com/projectdiscovery/utils/slice"
 	stringsutil "github.com/projectdiscovery/utils/strings"
@@ -47,6 +47,10 @@ import (
 
 const (
 	defaultMaxWorkers = 150
+)
+
+var (
+	MaxBodyRead = int64(1 << 22) // 4MB using shift operator
 )
 
 // Type returns the type of the protocol request
@@ -104,36 +108,94 @@ func (request *Request) executeRaceRequest(input *contextargs.Context, previous 
 		generatedRequests = append(generatedRequests, generatedRequest)
 	}
 
-	wg := sync.WaitGroup{}
-	var requestErr error
-	mutex := &sync.Mutex{}
+	shouldStop := (request.options.Options.StopAtFirstMatch || request.StopAtFirstMatch || request.options.StopAtFirstMatch)
+	spmHandler := httputils.NewNonBlockingSPMHandler[error](ctx, shouldStop)
+	gotMatches := &atomic.Bool{}
+	// wrappedCallback is a callback that wraps the original callback
+	// to implement stop at first match logic
+	wrappedCallback := func(event *output.InternalWrappedEvent) {
+		if !event.HasOperatorResult() {
+			callback(event) // not required but we can allow it
+			return
+		}
+		// this will execute match condition such that if stop at first match is enabled
+		// this will be only executed once
+		spmHandler.MatchCallback(func() {
+			gotMatches.Store(true)
+			callback(event)
+		})
+		if shouldStop {
+			// stop all running requests and exit
+			spmHandler.Trigger()
+		}
+	}
+
 	for i := 0; i < request.RaceNumberRequests; i++ {
-		wg.Add(1)
+		spmHandler.Acquire()
+		// execute http request
 		go func(httpRequest *generatedRequest) {
-			defer wg.Done()
-			err := request.executeRequest(input, httpRequest, previous, false, callback, 0)
-			mutex.Lock()
-			if err != nil {
-				requestErr = multierr.Append(requestErr, err)
+			defer spmHandler.Release()
+			defer func() {
+				if r := recover(); r != nil {
+					gologger.Verbose().Msgf("[%s] Recovered from panic: %v\n", request.options.TemplateID, r)
+				}
+			}()
+			if spmHandler.FoundFirstMatch() {
+				// stop sending more requests condition is met
+				return
 			}
-			mutex.Unlock()
+
+			select {
+			case <-spmHandler.Done():
+				return
+			case spmHandler.ResultChan <- request.executeRequest(input, httpRequest, previous, false, wrappedCallback, 0):
+				return
+			}
 		}(generatedRequests[i])
 		request.options.Progress.IncrementRequests()
 	}
-	wg.Wait()
+	spmHandler.Wait()
 
-	return requestErr
+	if spmHandler.FoundFirstMatch() {
+		// ignore any context cancellation and in-transit execution errors
+		return nil
+	}
+	return multierr.Combine(spmHandler.CombinedResults()...)
 }
 
 // executeRaceRequest executes parallel requests for a template
 func (request *Request) executeParallelHTTP(input *contextargs.Context, dynamicValues output.InternalEvent, callback protocols.OutputEventCallback) error {
-	generator := request.newGenerator(false)
 	// Workers that keeps enqueuing new requests
 	maxWorkers := request.Threads
-	swg := sizedwaitgroup.New(maxWorkers)
 
-	var requestErr error
-	mutex := &sync.Mutex{}
+	if protocolstate.IsLowOnMemory() {
+		maxWorkers = protocolstate.GuardThreadsOrDefault(request.Threads)
+	}
+
+	// Stop-at-first-match logic while executing requests
+	// parallely using threads
+	shouldStop := (request.options.Options.StopAtFirstMatch || request.StopAtFirstMatch || request.options.StopAtFirstMatch)
+	spmHandler := httputils.NewBlockingSPMHandler[error](context.Background(), maxWorkers, shouldStop)
+	// wrappedCallback is a callback that wraps the original callback
+	// to implement stop at first match logic
+	wrappedCallback := func(event *output.InternalWrappedEvent) {
+		if !event.HasOperatorResult() {
+			callback(event) // not required but we can allow it
+			return
+		}
+		// this will execute match condition such that if stop at first match is enabled
+		// this will be only executed once
+		spmHandler.MatchCallback(func() {
+			callback(event)
+		})
+		if shouldStop {
+			// stop all running requests and exit
+			spmHandler.Trigger()
+		}
+	}
+
+	// iterate payloads and make requests
+	generator := request.newGenerator(false)
 	for {
 		inputData, payloads, ok := generator.nextValue()
 		if !ok {
@@ -151,24 +213,38 @@ func (request *Request) executeParallelHTTP(input *contextargs.Context, dynamicV
 		if input.MetaInput.Input == "" {
 			input.MetaInput.Input = generatedHttpRequest.URL()
 		}
-		swg.Add()
+		spmHandler.Acquire()
 		go func(httpRequest *generatedRequest) {
-			defer swg.Done()
-
-			request.options.RateLimiter.Take()
-
-			previous := make(map[string]interface{})
-			err := request.executeRequest(input, httpRequest, previous, false, callback, 0)
-			mutex.Lock()
-			if err != nil {
-				requestErr = multierr.Append(requestErr, err)
+			defer spmHandler.Release()
+			defer func() {
+				if r := recover(); r != nil {
+					gologger.Verbose().Msgf("[%s] Recovered from panic: %v\n", request.options.TemplateID, r)
+				}
+			}()
+			if spmHandler.FoundFirstMatch() {
+				return
 			}
-			mutex.Unlock()
+
+			select {
+			case <-spmHandler.Done():
+				return
+			case spmHandler.ResultChan <- func() error {
+				// putting ratelimiter here prevents any unnecessary waiting if any
+				request.options.RateLimiter.Take()
+				previous := make(map[string]interface{})
+				return request.executeRequest(input, httpRequest, previous, false, wrappedCallback, 0)
+			}():
+				return
+			}
 		}(generatedHttpRequest)
 		request.options.Progress.IncrementRequests()
 	}
-	swg.Wait()
-	return requestErr
+	spmHandler.Wait()
+	if spmHandler.FoundFirstMatch() {
+		// ignore any context cancellation and in-transit execution errors
+		return nil
+	}
+	return multierr.Combine(spmHandler.CombinedResults()...)
 }
 
 // executeTurboHTTP executes turbo http request for a URL
@@ -198,10 +274,31 @@ func (request *Request) executeTurboHTTP(input *contextargs.Context, dynamicValu
 	if pipeOptions.MaxPendingRequests > maxWorkers {
 		maxWorkers = pipeOptions.MaxPendingRequests
 	}
-	swg := sizedwaitgroup.New(maxWorkers)
 
-	var requestErr error
-	mutex := &sync.Mutex{}
+	// Stop-at-first-match logic while executing requests
+	// parallely using threads
+	// Stop-at-first-match logic while executing requests
+	// parallely using threads
+	shouldStop := (request.options.Options.StopAtFirstMatch || request.StopAtFirstMatch || request.options.StopAtFirstMatch)
+	spmHandler := httputils.NewBlockingSPMHandler[error](context.Background(), maxWorkers, shouldStop)
+	// wrappedCallback is a callback that wraps the original callback
+	// to implement stop at first match logic
+	wrappedCallback := func(event *output.InternalWrappedEvent) {
+		if !event.HasOperatorResult() {
+			callback(event) // not required but we can allow it
+			return
+		}
+		// this will execute match condition such that if stop at first match is enabled
+		// this will be only executed once
+		spmHandler.MatchCallback(func() {
+			callback(event)
+		})
+		if shouldStop {
+			// stop all running requests and exit
+			spmHandler.Trigger()
+		}
+	}
+
 	for {
 		inputData, payloads, ok := generator.nextValue()
 		if !ok {
@@ -217,113 +314,34 @@ func (request *Request) executeTurboHTTP(input *contextargs.Context, dynamicValu
 			input.MetaInput.Input = generatedHttpRequest.URL()
 		}
 		generatedHttpRequest.pipelinedClient = pipeClient
-		swg.Add()
+		spmHandler.Acquire()
 		go func(httpRequest *generatedRequest) {
-			defer swg.Done()
-
-			err := request.executeRequest(input, httpRequest, previous, false, callback, 0)
-			mutex.Lock()
-			if err != nil {
-				requestErr = multierr.Append(requestErr, err)
+			defer spmHandler.Release()
+			defer func() {
+				if r := recover(); r != nil {
+					gologger.Verbose().Msgf("[%s] Recovered from panic: %v\n", request.options.TemplateID, r)
+				}
+			}()
+			if spmHandler.FoundFirstMatch() {
+				// skip if first match is found
+				return
 			}
-			mutex.Unlock()
+
+			select {
+			case <-spmHandler.Done():
+				return
+			case spmHandler.ResultChan <- request.executeRequest(input, httpRequest, previous, false, wrappedCallback, 0):
+				return
+			}
 		}(generatedHttpRequest)
 		request.options.Progress.IncrementRequests()
 	}
-	swg.Wait()
-	return requestErr
-}
-
-// executeFuzzingRule executes fuzzing request for a URL
-func (request *Request) executeFuzzingRule(input *contextargs.Context, previous output.InternalEvent, callback protocols.OutputEventCallback) error {
-	// If request is self-contained we don't need to parse any input.
-	if !request.SelfContained {
-		// If it's not self-contained we parse user provided input
-		if _, err := urlutil.Parse(input.MetaInput.Input); err != nil {
-			return errors.Wrap(err, "could not parse url")
-		}
+	spmHandler.Wait()
+	if spmHandler.FoundFirstMatch() {
+		// ignore any context cancellation and in-transit execution errors
+		return nil
 	}
-	fuzzRequestCallback := func(gr fuzz.GeneratedRequest) bool {
-		hasInteractMatchers := interactsh.HasMatchers(request.CompiledOperators)
-		hasInteractMarkers := len(gr.InteractURLs) > 0
-		if request.options.HostErrorsCache != nil && request.options.HostErrorsCache.Check(input.MetaInput.Input) {
-			return false
-		}
-		request.options.RateLimiter.Take()
-		req := &generatedRequest{
-			request:        gr.Request,
-			dynamicValues:  gr.DynamicValues,
-			interactshURLs: gr.InteractURLs,
-			original:       request,
-		}
-		var gotMatches bool
-		requestErr := request.executeRequest(input, req, gr.DynamicValues, hasInteractMatchers, func(event *output.InternalWrappedEvent) {
-			if hasInteractMarkers && hasInteractMatchers && request.options.Interactsh != nil {
-				requestData := &interactsh.RequestData{
-					MakeResultFunc: request.MakeResultEvent,
-					Event:          event,
-					Operators:      request.CompiledOperators,
-					MatchFunc:      request.Match,
-					ExtractFunc:    request.Extract,
-				}
-				request.options.Interactsh.RequestEvent(gr.InteractURLs, requestData)
-				gotMatches = request.options.Interactsh.AlreadyMatched(requestData)
-			} else {
-				callback(event)
-			}
-			// Add the extracts to the dynamic values if any.
-			if event.OperatorsResult != nil {
-				gotMatches = event.OperatorsResult.Matched
-			}
-		}, 0)
-		// If a variable is unresolved, skip all further requests
-		if errors.Is(requestErr, errStopExecution) {
-			return false
-		}
-		if requestErr != nil {
-			if request.options.HostErrorsCache != nil {
-				request.options.HostErrorsCache.MarkFailed(input.MetaInput.Input, requestErr)
-			}
-			gologger.Verbose().Msgf("[%s] Error occurred in request: %s\n", request.options.TemplateID, requestErr)
-		}
-		request.options.Progress.IncrementRequests()
-
-		// If this was a match, and we want to stop at first match, skip all further requests.
-		shouldStopAtFirstMatch := request.options.Options.StopAtFirstMatch || request.StopAtFirstMatch
-		if shouldStopAtFirstMatch && gotMatches {
-			return false
-		}
-		return true
-	}
-
-	// Iterate through all requests for template and queue them for fuzzing
-	generator := request.newGenerator(true)
-	for {
-		value, payloads, result := generator.nextValue()
-		if !result {
-			break
-		}
-		generated, err := generator.Make(context.Background(), input, value, payloads, nil)
-		if err != nil {
-			continue
-		}
-		input.MetaInput = &contextargs.MetaInput{Input: generated.URL()}
-		for _, rule := range request.Fuzzing {
-			err = rule.Execute(&fuzz.ExecuteRuleInput{
-				Input:       input,
-				Callback:    fuzzRequestCallback,
-				Values:      generated.dynamicValues,
-				BaseRequest: generated.request,
-			})
-			if err == types.ErrNoMoreRequests {
-				return nil
-			}
-			if err != nil {
-				return errors.Wrap(err, "could not execute rule")
-			}
-		}
-	}
-	return nil
+	return multierr.Combine(spmHandler.CombinedResults()...)
 }
 
 // ExecuteWithResults executes the final request on a URL
@@ -336,7 +354,6 @@ func (request *Request) ExecuteWithResults(input *contextargs.Context, dynamicVa
 	if request.Pipeline {
 		return request.executeTurboHTTP(input, dynamicValues, previous, callback)
 	}
-
 	// verify if a basic race condition was requested
 	if request.Race && request.RaceNumberRequests > 0 {
 		return request.executeRaceRequest(input, dynamicValues, callback)
@@ -348,7 +365,7 @@ func (request *Request) ExecuteWithResults(input *contextargs.Context, dynamicVa
 	}
 
 	// verify if parallel elaboration was requested
-	if request.Threads > 0 {
+	if request.Threads > 0 && len(request.Payloads) > 0 {
 		return request.executeParallelHTTP(input, dynamicValues, callback)
 	}
 
@@ -389,7 +406,7 @@ func (request *Request) ExecuteWithResults(input *contextargs.Context, dynamicVa
 				return true, nil
 			}
 			var gotMatches bool
-			err = request.executeRequest(input, generatedHttpRequest, previous, hasInteractMatchers, func(event *output.InternalWrappedEvent) {
+			execReqErr := request.executeRequest(input, generatedHttpRequest, previous, hasInteractMatchers, func(event *output.InternalWrappedEvent) {
 				// a special case where operators has interactsh matchers and multiple request are made
 				// ex: status_code_2 , interactsh_protocol (from 1st request) etc
 				needsRequestEvent := interactsh.HasMatchers(request.CompiledOperators) && request.NeedsRequestCondition()
@@ -420,14 +437,14 @@ func (request *Request) ExecuteWithResults(input *contextargs.Context, dynamicVa
 			}, generator.currentIndex)
 
 			// If a variable is unresolved, skip all further requests
-			if errors.Is(err, errStopExecution) {
+			if errors.Is(execReqErr, errStopExecution) {
 				return true, nil
 			}
-			if err != nil {
+			if execReqErr != nil {
 				if request.options.HostErrorsCache != nil {
 					request.options.HostErrorsCache.MarkFailed(input.MetaInput.ID(), err)
 				}
-				requestErr = err
+				requestErr = errorutil.NewWithErr(execReqErr).Msgf("got err while executing %v", generatedHttpRequest.URL())
 			}
 			request.options.Progress.IncrementRequests()
 
@@ -471,6 +488,35 @@ var errStopExecution = errors.New("stop execution due to unresolved variables")
 
 // executeRequest executes the actual generated request and returns error if occurred
 func (request *Request) executeRequest(input *contextargs.Context, generatedRequest *generatedRequest, previousEvent output.InternalEvent, hasInteractMatchers bool, callback protocols.OutputEventCallback, requestCount int) error {
+	outputEvent := output.InternalEvent{}
+	var event *output.InternalWrappedEvent
+	// event should never be nil as per existing logic
+	defer func() {
+		if event == nil {
+			event := &output.InternalWrappedEvent{
+				InternalEvent: map[string]interface{}{
+					"template-id": request.options.TemplateID,
+					"host":        input.MetaInput.Input,
+				},
+			}
+			if request.CompiledOperators != nil && request.CompiledOperators.HasDSL() {
+				event.InternalEvent = outputEvent
+			}
+			callback(event)
+			return
+		}
+		if event.InternalEvent == nil {
+			event.InternalEvent = outputEvent
+		}
+		// make sure templateId is never nil
+		if event.InternalEvent["template-id"] == nil {
+			event.InternalEvent["template-id"] = request.options.TemplateID
+		}
+		if event.InternalEvent["host"] == nil {
+			event.InternalEvent["host"] = input.MetaInput.Input
+		}
+	}()
+
 	request.setCustomHeaders(generatedRequest)
 
 	// Try to evaluate any payloads before replacement
@@ -549,6 +595,12 @@ func (request *Request) executeRequest(input *contextargs.Context, generatedRequ
 			}
 		}
 	}
+
+	// === apply auth strategies ===
+	if generatedRequest.request != nil {
+		generatedRequest.ApplyAuth(request.options.AuthProvider)
+	}
+
 	var formedURL string
 	var hostname string
 	timeStart := time.Now()
@@ -652,10 +704,7 @@ func (request *Request) executeRequest(input *contextargs.Context, generatedRequ
 			}
 		}
 	}
-	// global wrap response body reader
-	if resp != nil && resp.Body != nil {
-		resp.Body = protocolutil.NewLimitResponseBody(resp.Body)
-	}
+
 	if err != nil {
 		// rawhttp doesn't support draining response bodies.
 		if resp != nil && resp.Body != nil && generatedRequest.rawRequest == nil && !generatedRequest.original.Pipeline {
@@ -668,7 +717,7 @@ func (request *Request) executeRequest(input *contextargs.Context, generatedRequ
 		// In case of interactsh markers and request times out, still send
 		// a callback event so in case we receive an interaction, correlation is possible.
 		// Also, to log failed use-cases.
-		outputEvent := request.responseToDSLMap(&http.Response{}, input.MetaInput.Input, formedURL, tostring.UnsafeToString(dumpedRequest), "", "", "", 0, generatedRequest.meta)
+		outputEvent = request.responseToDSLMap(&http.Response{}, input.MetaInput.Input, formedURL, convUtil.String(dumpedRequest), "", "", "", 0, generatedRequest.meta)
 		if i := strings.LastIndex(hostname, ":"); i != -1 {
 			hostname = hostname[:i]
 		}
@@ -678,12 +727,6 @@ func (request *Request) executeRequest(input *contextargs.Context, generatedRequ
 		} else {
 			outputEvent["ip"] = httpclientpool.Dialer.GetDialedIP(hostname)
 		}
-
-		event := &output.InternalWrappedEvent{InternalEvent: outputEvent}
-		if request.CompiledOperators != nil {
-			event.InternalEvent = outputEvent
-		}
-		callback(event)
 		return err
 	}
 
@@ -701,17 +744,19 @@ func (request *Request) executeRequest(input *contextargs.Context, generatedRequ
 	request.options.Output.Request(request.options.TemplatePath, formedURL, request.Type().String(), err)
 
 	duration := time.Since(timeStart)
+
 	// define max body read limit
-	maxBodylimit := -1 // stick to default 4MB
+	maxBodylimit := MaxBodyRead // 10MB
 	if request.MaxSize > 0 {
-		maxBodylimit = request.MaxSize
-	} else if request.options.Options.ResponseReadSize != 0 {
-		maxBodylimit = request.options.Options.ResponseReadSize
+		maxBodylimit = int64(request.MaxSize)
+	}
+	if request.options.Options.ResponseReadSize != 0 {
+		maxBodylimit = int64(request.options.Options.ResponseReadSize)
 	}
 
 	// respChain is http response chain that reads response body
 	// efficiently by reusing buffers and does all decoding and optimizations
-	respChain := httputils.NewResponseChain(resp, int64(maxBodylimit))
+	respChain := httpUtils.NewResponseChain(resp, maxBodylimit)
 	defer respChain.Close() // reuse buffers
 
 	// we only intend to log/save the final redirected response
@@ -753,7 +798,7 @@ func (request *Request) executeRequest(input *contextargs.Context, generatedRequ
 		}
 		finalEvent := make(output.InternalEvent)
 
-		outputEvent := request.responseToDSLMap(respChain.Response(), input.MetaInput.Input, matchedURL, convUtil.String(dumpedRequest), respChain.FullResponse().String(), respChain.Body().String(), respChain.Headers().String(), duration, generatedRequest.meta)
+		outputEvent = request.responseToDSLMap(respChain.Response(), input.MetaInput.Input, matchedURL, convUtil.String(dumpedRequest), respChain.FullResponse().String(), respChain.Body().String(), respChain.Headers().String(), duration, generatedRequest.meta)
 		// add response fields to template context and merge templatectx variables to output event
 		request.options.AddTemplateVars(input.MetaInput, request.Type(), request.ID, outputEvent)
 		if request.options.HasTemplateCtx(input.MetaInput) {
@@ -791,7 +836,7 @@ func (request *Request) executeRequest(input *contextargs.Context, generatedRequ
 		// prune signature internal values if any
 		request.pruneSignatureInternalValues(generatedRequest.meta)
 
-		event := eventcreator.CreateEventWithAdditionalOptions(request, generators.MergeMaps(generatedRequest.dynamicValues, finalEvent), request.options.Options.Debug || request.options.Options.DebugResponse, func(internalWrappedEvent *output.InternalWrappedEvent) {
+		event = eventcreator.CreateEventWithAdditionalOptions(request, generators.MergeMaps(generatedRequest.dynamicValues, finalEvent), request.options.Options.Debug || request.options.Options.DebugResponse, func(internalWrappedEvent *output.InternalWrappedEvent) {
 			internalWrappedEvent.OperatorsResult.PayloadValues = generatedRequest.meta
 		})
 		if hasInteractMatchers {
