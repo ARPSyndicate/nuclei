@@ -174,6 +174,12 @@ func (f *FlowExecutor) Compile() error {
 
 // ExecuteWithResults executes the flow and returns results
 func (f *FlowExecutor) ExecuteWithResults(ctx *scan.ScanContext) error {
+	select {
+	case <-ctx.Context().Done():
+		return ctx.Context().Err()
+	default:
+	}
+
 	f.ctx.Input = ctx.Input
 	// -----Load all types of variables-----
 	// add all input args to template context
@@ -220,7 +226,11 @@ func (f *FlowExecutor) ExecuteWithResults(ctx *scan.ScanContext) error {
 		}
 	}
 	// register template object
-	if err := runtime.Set("template", f.options.GetTemplateCtx(f.ctx.Input.MetaInput).GetAll()); err != nil {
+	tmplObj := f.options.GetTemplateCtx(f.ctx.Input.MetaInput).GetAll()
+	if tmplObj == nil {
+		tmplObj = map[string]interface{}{}
+	}
+	if err := runtime.Set("template", tmplObj); err != nil {
 		return err
 	}
 
